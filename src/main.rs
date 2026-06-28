@@ -44,15 +44,16 @@ pub enum PlayState {
 
 struct App {
     // keyboard
-    keys:            Vec<Key>,
-    note_to_key:     HashMap<u8, KeyId>,
-    keyboard_notes:  std::collections::HashSet<u8>,
-    highlighted:     HashMap<KeyId, usize>, // KeyId → track index
+    keys:             Vec<Key>,
+    note_to_all_keys: HashMap<u8, Vec<KeyId>>,
+    keyboard_notes:   std::collections::HashSet<u8>,
+    highlighted:      HashMap<KeyId, usize>, // KeyId → track index
 
     // MIDI file
-    midi_file:       Option<midi::MidiFile>,
-    octave_offset:   i8,
-    pitch_step:      i8, // 1 = semitone, 12 = octave
+    midi_file:        Option<midi::MidiFile>,
+    octave_offset:    i8,
+    pitch_step:       i8,          // 1 = semitone, 12 = octave
+    vertical_octave:  bool,        // false = left/right (default), true = up/down
     skipped_notes:   usize,
     track_muted:     Vec<bool>,
     load_error:      Option<String>,
@@ -74,14 +75,15 @@ impl Default for App {
         let layout = build_layout();
         let midi_port_names = playback::list_output_ports();
         App {
-            keyboard_notes:  layout.keyboard_notes,
-            keys:            layout.keys,
-            note_to_key:     layout.note_to_key,
-            highlighted:     HashMap::new(),
+            keyboard_notes:   layout.keyboard_notes,
+            keys:             layout.keys,
+            note_to_all_keys: layout.note_to_all_keys,
+            highlighted:      HashMap::new(),
 
-            midi_file:       None,
-            octave_offset:   0,
-            pitch_step:      12,
+            midi_file:        None,
+            octave_offset:    0,
+            pitch_step:       12,
+            vertical_octave:  false,
             skipped_notes:   0,
             track_muted:     Vec::new(),
             load_error:      None,
@@ -115,6 +117,7 @@ pub enum Message {
     PitchDown,
     PitchStepToggle,
     PitchReset,
+    OctaveLayoutToggle,
     // tracks
     TrackMuted(usize, bool),
     // transport
@@ -205,6 +208,11 @@ impl App {
                 self.octave_offset = 0;
                 Task::none()
             }
+            Message::OctaveLayoutToggle => {
+                self.vertical_octave = !self.vertical_octave;
+                self.highlighted.clear();
+                Task::none()
+            }
 
             // ── Tracks ─────────────────────────────────────────────────────
             Message::TrackMuted(idx, muted) => {
@@ -261,15 +269,27 @@ impl App {
                         PlayEvent::NoteOn(note, track) => {
                             let shifted = (note as i16 + self.octave_offset as i16)
                                 .clamp(0, 127) as u8;
-                            if let Some(&kid) = self.note_to_key.get(&shifted) {
-                                self.highlighted.insert(kid, track);
+                            if let Some(kids) = self.note_to_all_keys.get(&shifted) {
+                                // vertical_octave: pick topmost row (first in list);
+                                // horizontal (default): pick bottommost row (last in list).
+                                let kid = if self.vertical_octave {
+                                    kids.first()
+                                } else {
+                                    kids.last()
+                                };
+                                if let Some(&kid) = kid {
+                                    self.highlighted.insert(kid, track);
+                                }
                             }
                         }
                         PlayEvent::NoteOff(note) => {
                             let shifted = (note as i16 + self.octave_offset as i16)
                                 .clamp(0, 127) as u8;
-                            if let Some(&kid) = self.note_to_key.get(&shifted) {
-                                self.highlighted.remove(&kid);
+                            // Remove all positions — the note could be lit on any row.
+                            if let Some(kids) = self.note_to_all_keys.get(&shifted) {
+                                for &kid in kids {
+                                    self.highlighted.remove(&kid);
+                                }
                             }
                         }
                         PlayEvent::Position(t) => {
@@ -350,11 +370,13 @@ impl App {
         };
 
         let step_label = if self.pitch_step == 12 { "OCT" } else { "ST" };
+        let layout_label = if self.vertical_octave { "↕" } else { "↔" };
         let pitch_col = column![
             button("▲").on_press_maybe(has_file.then_some(Message::PitchUp)),
             button(step_label).on_press(Message::PitchStepToggle),
             button("▼").on_press_maybe(has_file.then_some(Message::PitchDown)),
             button("↺").on_press_maybe((self.octave_offset != 0).then_some(Message::PitchReset)),
+            button(layout_label).on_press(Message::OctaveLayoutToggle),
         ]
         .spacing(2)
         .align_x(Alignment::Center);

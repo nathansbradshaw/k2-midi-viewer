@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 
 pub struct Layout {
     pub keys: Vec<Key>,
-    /// Raw firmware MIDI note → KeyId (before any octave offset).
-    pub note_to_key: HashMap<u8, KeyId>,
+    /// All KeyIds for each note, ordered top-row first (Row 1 → Row 5).
+    /// Multiple entries exist where rows overlap (same note appears on two rows).
+    pub note_to_all_keys: HashMap<u8, Vec<KeyId>>,
     /// Set of all raw firmware MIDI notes present on this keyboard.
     pub keyboard_notes: HashSet<u8>,
 }
@@ -235,16 +236,20 @@ pub fn build_layout() -> Layout {
     keys.push(Key::new(next_id(), ".", np + 2.0, 4.0, Cluster::Numpad).sub("Del"));
     keys.push(Key::new(next_id(), "PgUp", np + 3.0, 4.0, Cluster::Numpad));
 
-    // Build note maps from the midi_note field on each key
-    let note_to_key: HashMap<u8, KeyId> = keys
-        .iter()
-        .filter_map(|k| k.midi_note.map(|n| (n, k.id)))
-        .collect();
-    let keyboard_notes: HashSet<u8> = note_to_key.keys().copied().collect();
+    // Build note maps from the midi_note field on each key.
+    // Keys are iterated in row order (1→5), so note_to_all_keys Vecs are top→bottom.
+    let mut note_to_all_keys: HashMap<u8, Vec<KeyId>> = HashMap::new();
+    for key in &keys {
+        if let Some(n) = key.midi_note {
+            note_to_all_keys.entry(n).or_default().push(key.id);
+        }
+    }
+
+    let keyboard_notes: HashSet<u8> = note_to_all_keys.keys().copied().collect();
 
     Layout {
         keys,
-        note_to_key,
+        note_to_all_keys,
         keyboard_notes,
     }
 }
