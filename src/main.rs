@@ -6,14 +6,14 @@ mod render;
 mod staff;
 mod synth;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use iced::widget::canvas::Canvas;
 use iced::widget::{button, checkbox, column, container, row, slider, text};
-use iced::{Alignment, Element, Length, Size, Subscription, Task, Theme};
+use iced::{Alignment, Background, Color, Element, Length, Size, Subscription, Task, Theme};
 
 use key::{Key, KeyId};
 use layout::build_layout;
@@ -46,12 +46,13 @@ struct App {
     // keyboard
     keys:            Vec<Key>,
     note_to_key:     HashMap<u8, KeyId>,
-    keyboard_notes:  HashSet<u8>,
-    highlighted:     HashSet<KeyId>,
+    keyboard_notes:  std::collections::HashSet<u8>,
+    highlighted:     HashMap<KeyId, usize>, // KeyId → track index
 
     // MIDI file
     midi_file:       Option<midi::MidiFile>,
     octave_offset:   i8,
+    pitch_step:      i8, // 1 = semitone, 12 = octave
     skipped_notes:   usize,
     track_muted:     Vec<bool>,
     load_error:      Option<String>,
@@ -76,10 +77,11 @@ impl Default for App {
             keyboard_notes:  layout.keyboard_notes,
             keys:            layout.keys,
             note_to_key:     layout.note_to_key,
-            highlighted:     HashSet::new(),
+            highlighted:     HashMap::new(),
 
             midi_file:       None,
             octave_offset:   0,
+            pitch_step:      12,
             skipped_notes:   0,
             track_muted:     Vec::new(),
             load_error:      None,
@@ -108,9 +110,11 @@ pub enum Message {
     OpenFile,
     FileChosen(Option<PathBuf>),
     MidiLoaded(Result<midi::MidiFile, String>),
-    // octave
-    OctaveUp,
-    OctaveDown,
+    // pitch nudge
+    PitchUp,
+    PitchDown,
+    PitchStepToggle,
+    PitchReset,
     // tracks
     TrackMuted(usize, bool),
     // transport
@@ -134,7 +138,9 @@ impl App {
         match message {
             // ── Keyboard ──────────────────────────────────────────────────
             Message::Toggle(id) => {
-                if !self.highlighted.remove(&id) { self.highlighted.insert(id); }
+                if self.highlighted.remove(&id).is_none() {
+                    self.highlighted.insert(id, usize::MAX); // manual = no track colour
+                }
                 Task::none()
             }
 
@@ -188,9 +194,17 @@ impl App {
                 Task::none()
             }
 
-            // ── Octave ─────────────────────────────────────────────────────
-            Message::OctaveUp   => { self.octave_offset += 12; Task::none() }
-            Message::OctaveDown => { self.octave_offset -= 12; Task::none() }
+            // ── Pitch nudge ────────────────────────────────────────────────
+            Message::PitchUp   => { self.octave_offset  = self.octave_offset.saturating_add(self.pitch_step); Task::none() }
+            Message::PitchDown => { self.octave_offset  = self.octave_offset.saturating_sub(self.pitch_step); Task::none() }
+            Message::PitchStepToggle => {
+                self.pitch_step = if self.pitch_step == 12 { 1 } else { 12 };
+                Task::none()
+            }
+            Message::PitchReset => {
+                self.octave_offset = 0;
+                Task::none()
+            }
 
             // ── Tracks ─────────────────────────────────────────────────────
             Message::TrackMuted(idx, muted) => {
@@ -244,11 +258,11 @@ impl App {
                 };
                 for evt in events {
                     match evt {
-                        PlayEvent::NoteOn(note) => {
+                        PlayEvent::NoteOn(note, track) => {
                             let shifted = (note as i16 + self.octave_offset as i16)
                                 .clamp(0, 127) as u8;
                             if let Some(&kid) = self.note_to_key.get(&shifted) {
-                                self.highlighted.insert(kid);
+                                self.highlighted.insert(kid, track);
                             }
                         }
                         PlayEvent::NoteOff(note) => {
@@ -316,10 +330,12 @@ impl App {
             let dur  = midi::total_duration_secs(f);
             let mins = (dur / 60.0) as u32;
             let secs = (dur % 60.0) as u32;
-            let offset_label = match self.octave_offset.cmp(&0) {
-                std::cmp::Ordering::Greater => format!("+{} oct", self.octave_offset / 12),
-                std::cmp::Ordering::Less    => format!("{} oct",  self.octave_offset / 12),
-                std::cmp::Ordering::Equal   => "±0 oct".to_string(),
+            let offset_label = if self.octave_offset == 0 {
+                "±0".to_string()
+            } else if self.octave_offset % 12 == 0 {
+                format!("{:+} oct", self.octave_offset / 12)
+            } else {
+                format!("{:+} st", self.octave_offset)
             };
             let skip = if self.skipped_notes > 0 {
                 format!("  ({} skipped)", self.skipped_notes)
@@ -333,20 +349,30 @@ impl App {
             text("No file loaded").into()
         };
 
-        let oct_row = row![
-            button("− oct").on_press(Message::OctaveDown),
-            button("+ oct").on_press(Message::OctaveUp),
+        let step_label = if self.pitch_step == 12 { "OCT" } else { "ST" };
+        let pitch_col = column![
+            button("▲").on_press_maybe(has_file.then_some(Message::PitchUp)),
+            button(step_label).on_press(Message::PitchStepToggle),
+            button("▼").on_press_maybe(has_file.then_some(Message::PitchDown)),
+            button("↺").on_press_maybe((self.octave_offset != 0).then_some(Message::PitchReset)),
         ]
-        .spacing(4);
+        .spacing(2)
+        .align_x(Alignment::Center);
 
-        let file_row = row![open_btn, meta, oct_row]
+        let file_row = row![open_btn, meta, pitch_col]
             .spacing(16)
             .align_y(Alignment::Center);
 
         // ── Row 2: transport ───────────────────────────────────────────────
-        let play_btn  = button("▶").on_press_maybe(has_file.then_some(Message::Play));
-        let pause_btn = button("⏸").on_press_maybe(has_file.then_some(Message::Pause));
-        let stop_btn  = button("⏹").on_press_maybe(has_file.then_some(Message::Stop));
+        let play_btn = button("▶").on_press_maybe(
+            (has_file && self.play_state != PlayState::Playing).then_some(Message::Play)
+        );
+        // Single contextual button: ⏸ while playing → pause; ⏹ while paused → stop.
+        let stop_pause_btn: Element<Message> = match self.play_state {
+            PlayState::Playing => button("⏸").on_press(Message::Pause).into(),
+            PlayState::Paused  => button("⏹").on_press(Message::Stop).into(),
+            PlayState::Stopped => button("⏹").into(), // disabled
+        };
 
         let audio_label = if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
             "🔊"
@@ -384,7 +410,7 @@ impl App {
         let port_btn = button(text(format!("Port: {port_label}"))).on_press(Message::NextPort);
 
         let transport_row = row![
-            play_btn, pause_btn, stop_btn, audio_btn,
+            play_btn, stop_pause_btn, audio_btn,
             scrubber,
             text(time_str),
             port_btn,
@@ -398,9 +424,22 @@ impl App {
                 let name  = t.name.as_deref().unwrap_or("Track");
                 let label = format!("{}: {}", i + 1, name);
                 let muted = self.track_muted.get(i).copied().unwrap_or(false);
-                checkbox(label, muted)
-                    .on_toggle(move |v| Message::TrackMuted(i, v))
-                    .into()
+                let (r, g, b) = render::TRACK_COLORS[i % render::TRACK_COLORS.len()];
+                let swatch = container(text(""))
+                    .width(12)
+                    .height(12)
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(Color::from_rgb8(r, g, b))),
+                        border: iced::Border { radius: 2.0.into(), ..Default::default() },
+                        ..Default::default()
+                    });
+                row![
+                    swatch,
+                    checkbox(label, muted).on_toggle(move |v| Message::TrackMuted(i, v))
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center)
+                .into()
             }).collect();
             row(items).spacing(12).into()
         } else {

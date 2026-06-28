@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::canvas::{self, Frame, Geometry, Path, Text};
@@ -7,12 +7,26 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse};
 use crate::key::{Cluster, Key, KeyId};
 use crate::Message;
 
+/// Per-track highlight palette — cycled for files with more than 8 tracks.
+/// RGB values tuned for visibility on the dark PCB and dark staff background.
+pub const TRACK_COLORS: &[(u8, u8, u8)] = &[
+    (0x4F, 0xC3, 0xF7), // sky blue
+    (0xFF, 0xB7, 0x4D), // amber
+    (0xA5, 0xD6, 0xA7), // green
+    (0xF4, 0x8F, 0xB1), // pink
+    (0xCE, 0x93, 0xD8), // lavender
+    (0xFF, 0xF1, 0x76), // yellow
+    (0xFF, 0x8A, 0x65), // coral
+    (0x80, 0xCB, 0xC4), // teal
+];
+
 pub const UNIT: f32 = 54.0;
 pub const GAP: f32 = 4.0;
 
 pub struct BoardCanvas<'a> {
-    pub keys: &'a [Key],
-    pub highlighted: &'a HashSet<KeyId>,
+    pub keys:        &'a [Key],
+    /// Maps KeyId → track index for color. usize::MAX = manually toggled (uses original colour).
+    pub highlighted: &'a HashMap<KeyId, usize>,
 }
 
 #[derive(Default)]
@@ -86,27 +100,46 @@ pub fn key_rect(key: &Key) -> Rectangle {
     }
 }
 
-fn cluster_colors(cluster: Cluster, lit: bool) -> (Color, Color) {
-    match (cluster, lit) {
-        (Cluster::Alpha, false) => (rgb(0x80, 0x8E, 0x62), Color::BLACK),
-        (Cluster::Alpha, true) => (rgb(0x9B, 0xE6, 0x6B), Color::BLACK),
+/// Returns (fill_color, text_color, glow_color) for a key.
+/// `lit_track`: Some(track) when playing, None when unlit.
+fn key_colors(cluster: Cluster, lit_track: Option<usize>) -> (Color, Color, Color) {
+    let lit = lit_track.is_some();
+
+    // For MIDI keys, use the track colour; fall back to gold for non-MIDI clusters.
+    let track_fill = |default_r, default_g, default_b| -> (Color, Color) {
+        match lit_track {
+            Some(t) if t != usize::MAX => {
+                let (r, g, b) = TRACK_COLORS[t % TRACK_COLORS.len()];
+                (Color::from_rgb8(r, g, b), Color::BLACK)
+            }
+            _ => (rgb(default_r, default_g, default_b), Color::BLACK),
+        }
+    };
+
+    let (fill, text) = match (cluster, lit) {
+        (Cluster::Alpha,      false) => (rgb(0x80, 0x8E, 0x62), Color::BLACK),
+        (Cluster::Alpha,      true)  => track_fill(0x9B, 0xE6, 0x6B),
         (Cluster::AlphaLight, false) => (rgb(0xCC, 0xD8, 0xBC), Color::BLACK),
-        (Cluster::AlphaLight, true) => (rgb(0x9B, 0xE6, 0x6B), Color::BLACK),
-        (Cluster::Nav, false) => (rgb(0xCE, 0xCB, 0xC2), Color::BLACK),
-        (Cluster::Nav, true) => (rgb(0xF5, 0xD9, 0x5E), Color::BLACK),
-        (Cluster::Arrow, false) => (rgb(0xD8, 0x8B, 0x66), Color::BLACK),
-        (Cluster::Arrow, true) => (rgb(0xFF, 0xA9, 0x4D), Color::BLACK),
-        (Cluster::Numpad, false) => (rgb(0xD8, 0xD5, 0xCB), Color::BLACK),
-        (Cluster::Numpad, true) => (rgb(0xF5, 0xD9, 0x5E), Color::BLACK),
-        (Cluster::Encoder, _) => (rgb(0xB8, 0xBE, 0xC2), Color::BLACK),
-    }
+        (Cluster::AlphaLight, true)  => track_fill(0x9B, 0xE6, 0x6B),
+        (Cluster::Nav,        false) => (rgb(0xCE, 0xCB, 0xC2), Color::BLACK),
+        (Cluster::Nav,        true)  => (rgb(0xF5, 0xD9, 0x5E), Color::BLACK),
+        (Cluster::Arrow,      false) => (rgb(0xD8, 0x8B, 0x66), Color::BLACK),
+        (Cluster::Arrow,      true)  => (rgb(0xFF, 0xA9, 0x4D), Color::BLACK),
+        (Cluster::Numpad,     false) => (rgb(0xD8, 0xD5, 0xCB), Color::BLACK),
+        (Cluster::Numpad,     true)  => (rgb(0xF5, 0xD9, 0x5E), Color::BLACK),
+        (Cluster::Encoder,    _)     => (rgb(0xB8, 0xBE, 0xC2), Color::BLACK),
+    };
+
+    // Glow ring matches the fill colour at high opacity.
+    let glow = Color { a: 0.88, ..fill };
+    (fill, text, glow)
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb8(r, g, b)
 }
 
-fn draw_board(frame: &mut Frame, keys: &[Key], highlighted: &HashSet<KeyId>) {
+fn draw_board(frame: &mut Frame, keys: &[Key], highlighted: &HashMap<KeyId, usize>) {
     let bg = Path::rectangle(Point::ORIGIN, frame.size());
     frame.fill(&bg, rgb(0x0A, 0x0A, 0x0A));
 
@@ -124,20 +157,20 @@ fn draw_board(frame: &mut Frame, keys: &[Key], highlighted: &HashSet<KeyId>) {
 
     for key in keys {
         let rect = key_rect(key);
-        let lit = highlighted.contains(&key.id);
+        let lit_track = highlighted.get(&key.id).copied();
 
         if key.is_knob {
             draw_knob(frame, rect);
             continue;
         }
 
-        let (fill, text_color) = cluster_colors(key.cluster, lit);
+        let (fill, text_color, glow_color) = key_colors(key.cluster, lit_track);
         let radius = 8.0;
 
         let path = rounded_rect(rect, radius);
         frame.fill(&path, fill);
 
-        if lit {
+        if lit_track.is_some() {
             let glow = rounded_rect(
                 Rectangle {
                     x: rect.x - 2.0,
@@ -149,9 +182,7 @@ fn draw_board(frame: &mut Frame, keys: &[Key], highlighted: &HashSet<KeyId>) {
             );
             frame.stroke(
                 &glow,
-                canvas::Stroke::default()
-                    .with_color(Color::from_rgba8(0xFF, 0xF3, 0x9C, 0.9))
-                    .with_width(2.5),
+                canvas::Stroke::default().with_color(glow_color).with_width(2.5),
             );
         }
 

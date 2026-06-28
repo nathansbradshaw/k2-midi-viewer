@@ -77,6 +77,22 @@ impl<'a> canvas::Program<Message> for StaffCanvas<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Colour helpers
+// ---------------------------------------------------------------------------
+
+fn track_note_color(track: usize, is_active: bool, is_past: bool) -> Color {
+    let (r, g, b) = crate::render::TRACK_COLORS[track % crate::render::TRACK_COLORS.len()];
+    let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    if is_active {
+        Color::new(rf, gf, bf, 1.0)           // full track colour
+    } else if is_past {
+        Color::new(rf * 0.27, gf * 0.27, bf * 0.27, 1.0) // very dim
+    } else {
+        Color::new(rf * 0.72, gf * 0.72, bf * 0.72, 1.0) // dimmed upcoming
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
 
@@ -195,13 +211,7 @@ fn draw_staff(
         let is_active = note.start_tick <= pos && pos < note.end_tick;
         let is_past   = note.end_tick   <= pos;
 
-        let note_col = if is_active {
-            Color::from_rgb8(0xF5, 0xD9, 0x5E) // gold — matches keyboard highlight
-        } else if is_past {
-            Color::from_rgb8(0x50, 0x50, 0x5C) // dim purple-grey
-        } else {
-            Color::from_rgb8(0xD2, 0xD2, 0xDC) // light — upcoming
-        };
+        let note_col = track_note_color(note.track, is_active, is_past);
 
         // Duration bar — a thin semi-transparent strip showing note length
         let end_x = tick_x(note.end_tick).min(w);

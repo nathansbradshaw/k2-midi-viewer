@@ -23,7 +23,7 @@ pub enum PlayCmd {
 
 #[derive(Debug)]
 pub enum PlayEvent {
-    NoteOn(u8),
+    NoteOn(u8, usize), // note, track index
     NoteOff(u8),
     Position(u64),
     Done,
@@ -209,7 +209,7 @@ fn run(
                                 if let Ok(mut s) = s.lock() { s.note_on(note, velocity); }
                             }
                         }
-                        events_out.lock().unwrap().push_back(PlayEvent::NoteOn(note));
+                        events_out.lock().unwrap().push_back(PlayEvent::NoteOn(note, ev.track));
                     }
                     EventKind::NoteOff { note } => {
                         if audio {
