@@ -53,6 +53,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
+        state.cache.clear(); // highlighted set changes every 16 ms during playback
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
             draw_board(frame, self.keys, self.highlighted);
         });

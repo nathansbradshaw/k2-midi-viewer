@@ -13,15 +13,16 @@ pub enum Cluster {
 
 #[derive(Debug, Clone)]
 pub struct Key {
-    pub id: KeyId,
-    pub label: &'static str,
-    pub sublabel: Option<&'static str>,
-    pub col: f32,
-    pub row: f32,
-    pub w: f32,
-    pub h: f32,
-    pub cluster: Cluster,
-    pub is_knob: bool,
+    pub id:        KeyId,
+    pub label:     &'static str,
+    pub sublabel:  Option<&'static str>,
+    pub midi_note: Option<u8>,
+    pub col:       f32,
+    pub row:       f32,
+    pub w:         f32,
+    pub h:         f32,
+    pub cluster:   Cluster,
+    pub is_knob:   bool,
 }
 
 impl Key {
@@ -33,15 +34,16 @@ impl Key {
         cluster: Cluster,
     ) -> Self {
         Key {
-            id: KeyId(id),
+            id:        KeyId(id),
             label,
-            sublabel: None,
+            sublabel:  None,
+            midi_note: None,
             col,
             row,
-            w: 1.0,
-            h: 1.0,
+            w:         1.0,
+            h:         1.0,
             cluster,
-            is_knob: false,
+            is_knob:   false,
         }
     }
 
@@ -53,6 +55,11 @@ impl Key {
     pub const fn size(mut self, w: f32, h: f32) -> Self {
         self.w = w;
         self.h = h;
+        self
+    }
+
+    pub const fn note(mut self, n: u8) -> Self {
+        self.midi_note = Some(n);
         self
     }
 
