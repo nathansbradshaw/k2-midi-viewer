@@ -46,14 +46,17 @@ struct App {
     // keyboard
     keys:             Vec<Key>,
     note_to_all_keys: HashMap<u8, Vec<KeyId>>,
-    keyboard_notes:   std::collections::HashSet<u8>,
-    highlighted:      HashMap<KeyId, usize>, // KeyId → track index
+    keyboard_notes:        std::collections::HashSet<u8>,
+    keyboard_notes_sorted: Vec<u8>, // ascending, for nearest-key search
+    highlighted:           HashMap<KeyId, usize>, // KeyId → track index
 
     // MIDI file
     midi_file:        Option<midi::MidiFile>,
     octave_offset:    i8,
     pitch_step:       i8,          // 1 = semitone, 12 = octave
     vertical_octave:  bool,        // false = left/right (default), true = up/down
+    show_all_notes:   bool,        // overlay every note in the file on the keyboard
+    all_notes_cache:  HashMap<KeyId, usize>, // precomputed for show_all_notes
     skipped_notes:   usize,
     track_muted:     Vec<bool>,
     load_error:      Option<String>,
@@ -74,16 +77,23 @@ impl Default for App {
     fn default() -> Self {
         let layout = build_layout();
         let midi_port_names = playback::list_output_ports();
+        let mut keyboard_notes_sorted: Vec<u8> =
+            layout.keyboard_notes.iter().copied().collect();
+        keyboard_notes_sorted.sort_unstable();
+
         App {
-            keyboard_notes:   layout.keyboard_notes,
-            keys:             layout.keys,
-            note_to_all_keys: layout.note_to_all_keys,
-            highlighted:      HashMap::new(),
+            keyboard_notes:        layout.keyboard_notes,
+            keyboard_notes_sorted,
+            keys:                  layout.keys,
+            note_to_all_keys:      layout.note_to_all_keys,
+            highlighted:           HashMap::new(),
 
             midi_file:        None,
             octave_offset:    0,
             pitch_step:       12,
             vertical_octave:  false,
+            show_all_notes:   false,
+            all_notes_cache:  HashMap::new(),
             skipped_notes:   0,
             track_muted:     Vec::new(),
             load_error:      None,
@@ -118,6 +128,7 @@ pub enum Message {
     PitchStepToggle,
     PitchReset,
     OctaveLayoutToggle,
+    ToggleAllNotes,
     // tracks
     TrackMuted(usize, bool),
     // transport
@@ -137,6 +148,54 @@ pub enum Message {
 // ---------------------------------------------------------------------------
 
 impl App {
+    fn rebuild_all_notes_cache(&mut self) {
+        self.all_notes_cache.clear();
+        let Some(ref f) = self.midi_file else { return };
+
+        // Pass 1: in-range notes (track color).
+        for note in &f.notes {
+            if self.track_muted.get(note.track).copied().unwrap_or(false) { continue; }
+            let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+            if let Some(kids) = self.note_to_all_keys.get(&shifted) {
+                let kid = if self.vertical_octave { kids.first() } else { kids.last() };
+                if let Some(&kid) = kid {
+                    self.all_notes_cache.insert(kid, note.track);
+                }
+            }
+        }
+
+        // Pass 2: out-of-range notes — highlight the nearest keyboard key with the
+        // warning sentinel (usize::MAX - 1) only if that key isn't already lit.
+        for note in &f.notes {
+            if self.track_muted.get(note.track).copied().unwrap_or(false) { continue; }
+            let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+            if self.note_to_all_keys.contains_key(&shifted) { continue; }
+            if let Some(nearest) = self.nearest_keyboard_note(shifted) {
+                if let Some(kids) = self.note_to_all_keys.get(&nearest) {
+                    let kid = if self.vertical_octave { kids.first() } else { kids.last() };
+                    if let Some(&kid) = kid {
+                        self.all_notes_cache.entry(kid).or_insert(usize::MAX - 1);
+                    }
+                }
+            }
+        }
+    }
+
+    fn nearest_keyboard_note(&self, note: u8) -> Option<u8> {
+        let s = &self.keyboard_notes_sorted;
+        if s.is_empty() { return None; }
+        let pos = s.partition_point(|&n| n < note);
+        Some(if pos == 0 {
+            s[0]
+        } else if pos == s.len() {
+            *s.last().unwrap()
+        } else {
+            let below = s[pos - 1];
+            let above = s[pos];
+            if note - below <= above - note { below } else { above }
+        })
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             // ── Keyboard ──────────────────────────────────────────────────
@@ -194,23 +253,43 @@ impl App {
                 );
                 self.playback_handle = Some(handle);
                 self.midi_file = Some(file);
+                self.rebuild_all_notes_cache();
                 Task::none()
             }
 
             // ── Pitch nudge ────────────────────────────────────────────────
-            Message::PitchUp   => { self.octave_offset  = self.octave_offset.saturating_add(self.pitch_step); Task::none() }
-            Message::PitchDown => { self.octave_offset  = self.octave_offset.saturating_sub(self.pitch_step); Task::none() }
+            Message::PitchUp => {
+                self.octave_offset = self.octave_offset.saturating_add(self.pitch_step);
+                if self.show_all_notes { self.rebuild_all_notes_cache(); }
+                Task::none()
+            }
+            Message::PitchDown => {
+                self.octave_offset = self.octave_offset.saturating_sub(self.pitch_step);
+                if self.show_all_notes { self.rebuild_all_notes_cache(); }
+                Task::none()
+            }
             Message::PitchStepToggle => {
                 self.pitch_step = if self.pitch_step == 12 { 1 } else { 12 };
                 Task::none()
             }
             Message::PitchReset => {
                 self.octave_offset = 0;
+                if self.show_all_notes { self.rebuild_all_notes_cache(); }
                 Task::none()
             }
             Message::OctaveLayoutToggle => {
                 self.vertical_octave = !self.vertical_octave;
                 self.highlighted.clear();
+                if self.show_all_notes { self.rebuild_all_notes_cache(); }
+                Task::none()
+            }
+            Message::ToggleAllNotes => {
+                self.show_all_notes = !self.show_all_notes;
+                if self.show_all_notes {
+                    self.rebuild_all_notes_cache();
+                } else {
+                    self.highlighted.clear();
+                }
                 Task::none()
             }
 
@@ -220,6 +299,7 @@ impl App {
                 if let Some(ref h) = self.playback_handle {
                     h.cmd_tx.send(PlayCmd::SetTrackMuted(idx, muted)).ok();
                 }
+                if self.show_all_notes { self.rebuild_all_notes_cache(); }
                 Task::none()
             }
 
@@ -267,28 +347,29 @@ impl App {
                 for evt in events {
                     match evt {
                         PlayEvent::NoteOn(note, track) => {
-                            let shifted = (note as i16 + self.octave_offset as i16)
-                                .clamp(0, 127) as u8;
-                            if let Some(kids) = self.note_to_all_keys.get(&shifted) {
-                                // vertical_octave: pick topmost row (first in list);
-                                // horizontal (default): pick bottommost row (last in list).
-                                let kid = if self.vertical_octave {
-                                    kids.first()
-                                } else {
-                                    kids.last()
-                                };
-                                if let Some(&kid) = kid {
-                                    self.highlighted.insert(kid, track);
+                            if !self.show_all_notes {
+                                let shifted = (note as i16 + self.octave_offset as i16)
+                                    .clamp(0, 127) as u8;
+                                if let Some(kids) = self.note_to_all_keys.get(&shifted) {
+                                    let kid = if self.vertical_octave {
+                                        kids.first()
+                                    } else {
+                                        kids.last()
+                                    };
+                                    if let Some(&kid) = kid {
+                                        self.highlighted.insert(kid, track);
+                                    }
                                 }
                             }
                         }
                         PlayEvent::NoteOff(note) => {
-                            let shifted = (note as i16 + self.octave_offset as i16)
-                                .clamp(0, 127) as u8;
-                            // Remove all positions — the note could be lit on any row.
-                            if let Some(kids) = self.note_to_all_keys.get(&shifted) {
-                                for &kid in kids {
-                                    self.highlighted.remove(&kid);
+                            if !self.show_all_notes {
+                                let shifted = (note as i16 + self.octave_offset as i16)
+                                    .clamp(0, 127) as u8;
+                                if let Some(kids) = self.note_to_all_keys.get(&shifted) {
+                                    for &kid in kids {
+                                        self.highlighted.remove(&kid);
+                                    }
                                 }
                             }
                         }
@@ -370,7 +451,7 @@ impl App {
         };
 
         let step_label = if self.pitch_step == 12 { "OCT" } else { "ST" };
-        let layout_label = if self.vertical_octave { "↕" } else { "↔" };
+        let layout_label = if self.vertical_octave { "UD" } else { "LR" };
         let pitch_col = column![
             button("▲").on_press_maybe(has_file.then_some(Message::PitchUp)),
             button(step_label).on_press(Message::PitchStepToggle),
@@ -381,7 +462,11 @@ impl App {
         .spacing(2)
         .align_x(Alignment::Center);
 
-        let file_row = row![open_btn, meta, pitch_col]
+        let all_notes_label = if self.show_all_notes { "All *" } else { "All" };
+        let all_notes_btn = button(all_notes_label)
+            .on_press_maybe(has_file.then_some(Message::ToggleAllNotes));
+
+        let file_row = row![open_btn, meta, pitch_col, all_notes_btn]
             .spacing(16)
             .align_y(Alignment::Center);
 
@@ -389,17 +474,17 @@ impl App {
         let play_btn = button("▶").on_press_maybe(
             (has_file && self.play_state != PlayState::Playing).then_some(Message::Play)
         );
-        // Single contextual button: ⏸ while playing → pause; ⏹ while paused → stop.
+        // Single contextual button: ‖ while playing → pause; ■ while paused → stop.
         let stop_pause_btn: Element<Message> = match self.play_state {
-            PlayState::Playing => button("⏸").on_press(Message::Pause).into(),
-            PlayState::Paused  => button("⏹").on_press(Message::Stop).into(),
-            PlayState::Stopped => button("⏹").into(), // disabled
+            PlayState::Playing => button("‖").on_press(Message::Pause).into(),
+            PlayState::Paused  => button("■").on_press(Message::Stop).into(),
+            PlayState::Stopped => button("■").into(), // disabled
         };
 
         let audio_label = if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
-            "🔊"
+            "Snd"
         } else {
-            "🔇"
+            "Mut"
         };
         let audio_btn = button(audio_label).on_press(Message::ToggleAudio);
 
@@ -469,9 +554,15 @@ impl App {
         };
 
         // ── Keyboard canvas ────────────────────────────────────────────────
+        let highlighted_ref = if self.show_all_notes {
+            &self.all_notes_cache
+        } else {
+            &self.highlighted
+        };
+
         let keyboard = Canvas::new(BoardCanvas {
             keys:        &self.keys,
-            highlighted: &self.highlighted,
+            highlighted: highlighted_ref,
         })
         .width(Length::Fill)
         .height(Length::Fill);

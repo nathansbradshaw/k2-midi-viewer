@@ -106,6 +106,12 @@ fn key_colors(cluster: Cluster, lit_track: Option<usize>) -> (Color, Color, Colo
     let lit = lit_track.is_some();
 
     // For MIDI keys, use the track colour; fall back to gold for non-MIDI clusters.
+    // usize::MAX - 1 = out-of-range warning (nearest key to a note off the board)
+    if lit_track == Some(usize::MAX - 1) {
+        let fill = rgb(0xE5, 0x50, 0x30);
+        return (fill, Color::WHITE, Color { a: 0.88, ..fill });
+    }
+
     let track_fill = |default_r, default_g, default_b| -> (Color, Color) {
         match lit_track {
             Some(t) if t != usize::MAX => {
