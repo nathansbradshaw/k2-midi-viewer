@@ -130,6 +130,77 @@ pub enum PlayState {
     Paused,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ComputerKeyLocation {
+    Standard,
+    Left,
+    Right,
+    Numpad,
+}
+
+impl From<iced::keyboard::Location> for ComputerKeyLocation {
+    fn from(location: iced::keyboard::Location) -> Self {
+        match location {
+            iced::keyboard::Location::Standard => Self::Standard,
+            iced::keyboard::Location::Left => Self::Left,
+            iced::keyboard::Location::Right => Self::Right,
+            iced::keyboard::Location::Numpad => Self::Numpad,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ComputerKey {
+    Character(String, ComputerKeyLocation),
+    Named(iced::keyboard::key::Named, ComputerKeyLocation),
+}
+
+fn normalize_computer_key(
+    key: iced::keyboard::Key,
+    location: iced::keyboard::Location,
+) -> Option<ComputerKey> {
+    let location = ComputerKeyLocation::from(location);
+    match key {
+        iced::keyboard::Key::Named(named) => Some(ComputerKey::Named(named, location)),
+        iced::keyboard::Key::Character(character) => {
+            let character = character.to_lowercase();
+            let character = if location == ComputerKeyLocation::Numpad {
+                character.as_str()
+            } else {
+                match character.as_str() {
+                    "~" => "`", "!" => "1", "@" => "2", "#" => "3",
+                    "$" => "4", "%" => "5", "^" => "6", "&" => "7",
+                    "*" => "8", "(" => "9", ")" => "0", "_" => "-",
+                    "+" => "=", "{" => "[", "}" => "]", "|" => "\\",
+                    ":" => ";", "\"" => "'", "<" => ",", ">" => ".",
+                    "?" => "/", other => other,
+                }
+            };
+            Some(ComputerKey::Character(character.to_string(), location))
+        }
+        iced::keyboard::Key::Unidentified => None,
+    }
+}
+
+fn computer_keyboard_event(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, location, .. }) => {
+            normalize_computer_key(key, location).map(Message::ComputerKeyPressed)
+        }
+        iced::Event::Keyboard(iced::keyboard::Event::KeyReleased { key, location, .. }) => {
+            normalize_computer_key(key, location).map(Message::ComputerKeyReleased)
+        }
+        iced::Event::Window(iced::window::Event::Unfocused) => {
+            Some(Message::ReleaseComputerKeys)
+        }
+        _ => None,
+    }
+}
+
 /// How to pick a key when a note repeats across this keyboard's overlapping
 /// rows. LeftRight/UpDown are fixed, predictable preferences (always the
 /// last/first occurrence). Closest instead solves for the key assignment
@@ -174,6 +245,9 @@ struct App {
     waveform:              synth::Waveform,
     waveform_key:          Option<KeyId>,
     pressed_keys:          HashSet<KeyId>,
+    keyboard_hits_enabled: bool,
+    computer_keys_down:    HashMap<ComputerKey, Vec<KeyId>>,
+    computer_key_labels:   HashMap<KeyId, String>,
 
     // MIDI file
     midi_file:        Option<midi::MidiFile>,
@@ -219,6 +293,7 @@ impl Default for App {
             .iter()
             .map(|k| (k.id, (k.col, k.row)))
             .collect();
+        let computer_key_labels = computer_projection_labels(&layout.keys);
 
         App {
             window_size: Size::new(1520.0, 900.0),
@@ -233,6 +308,9 @@ impl Default for App {
             waveform:              synth::Waveform::default(),
             waveform_key:          None,
             pressed_keys:          HashSet::new(),
+            keyboard_hits_enabled: false,
+            computer_keys_down:    HashMap::new(),
+            computer_key_labels,
 
             midi_file:        None,
             octave_offset:    0,
@@ -271,6 +349,10 @@ pub enum Message {
     // keyboard
     KeyPressed(KeyId),
     KeyReleased(KeyId),
+    ToggleKeyboardHits,
+    ComputerKeyPressed(ComputerKey),
+    ComputerKeyReleased(ComputerKey),
+    ReleaseComputerKeys,
     // file
     OpenFile,
     FileChosen(Option<PathBuf>),
@@ -320,6 +402,160 @@ fn toggle_waveform(
     } else {
         (Some(pressed_key), selected)
     }
+}
+
+fn key_range(keys: &[Key], row: f32, start: usize, end: usize) -> Vec<KeyId> {
+    let mut row_keys: Vec<&Key> = keys.iter()
+        .filter(|key| {
+            matches!(key.cluster, Cluster::Alpha | Cluster::AlphaLight)
+                && key.row == row
+        })
+        .collect();
+    row_keys.sort_by(|a, b| a.col.total_cmp(&b.col));
+    row_keys.get(start..=end)
+        .unwrap_or(&[])
+        .iter()
+        .map(|key| key.id)
+        .collect()
+}
+
+fn cluster_key(keys: &[Key], cluster: Cluster, label: &str) -> Vec<KeyId> {
+    keys.iter()
+        .find(|key| key.cluster == cluster && key.label == label)
+        .map(|key| vec![key.id])
+        .unwrap_or_default()
+}
+
+fn numpad_range(keys: &[Key], indices: &[usize]) -> Vec<KeyId> {
+    let mut numpad: Vec<&Key> = keys.iter()
+        .filter(|key| key.cluster == Cluster::Numpad)
+        .collect();
+    numpad.sort_by(|a, b| a.row.total_cmp(&b.row).then(a.col.total_cmp(&b.col)));
+    indices.iter().filter_map(|&index| numpad.get(index).map(|key| key.id)).collect()
+}
+
+fn mapped_computer_keys(keys: &[Key], computer_key: &ComputerKey) -> Vec<KeyId> {
+    use iced::keyboard::key::Named;
+
+    let alpha_span = match computer_key {
+        ComputerKey::Character(character, ComputerKeyLocation::Standard) => {
+            const ROW_1: [&str; 13] = ["`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="];
+            const ROW_2: [&str; 13] = ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "[", "]", "\\"];
+            const ROW_3: [&str; 11] = ["a", "s", "d", "f", "g", "h", "j", "k", "l", ";", "'"];
+            const ROW_4: [&str; 10] = ["z", "x", "c", "v", "b", "n", "m", ",", ".", "/"];
+
+            ROW_1.iter().position(|value| *value == character).map(|index| (1.0, index, index))
+                .or_else(|| ROW_2.iter().position(|value| *value == character).map(|index| (2.0, index + 2, index + 2)))
+                .or_else(|| ROW_3.iter().position(|value| *value == character).map(|index| (3.0, index + 1, index + 1)))
+                .or_else(|| ROW_4.iter().position(|value| *value == character).map(|index| (4.0, index + 2, index + 2)))
+        }
+        ComputerKey::Named(Named::Backspace, ComputerKeyLocation::Standard) => Some((1.0, 13, 13)),
+        ComputerKey::Named(Named::Tab, ComputerKeyLocation::Standard) => Some((2.0, 0, 1)),
+        ComputerKey::Named(Named::CapsLock, ComputerKeyLocation::Standard) => Some((3.0, 0, 0)),
+        ComputerKey::Named(Named::Enter, ComputerKeyLocation::Standard) => Some((3.0, 12, 13)),
+        ComputerKey::Named(Named::Shift, ComputerKeyLocation::Left) => Some((4.0, 0, 1)),
+        ComputerKey::Named(Named::Shift, ComputerKeyLocation::Right) => Some((4.0, 12, 14)),
+        ComputerKey::Named(Named::Control, ComputerKeyLocation::Left) => Some((5.0, 0, 0)),
+        ComputerKey::Named(Named::Fn | Named::Meta | Named::Super, ComputerKeyLocation::Left) => Some((5.0, 1, 1)),
+        ComputerKey::Named(Named::Alt, ComputerKeyLocation::Left) => Some((5.0, 2, 2)),
+        ComputerKey::Named(Named::Space, _) => Some((5.0, 3, 8)),
+        ComputerKey::Named(Named::Alt | Named::AltGraph, ComputerKeyLocation::Right) => Some((5.0, 9, 9)),
+        ComputerKey::Named(Named::Meta | Named::Super, ComputerKeyLocation::Right) => Some((5.0, 10, 10)),
+        ComputerKey::Named(Named::Control, ComputerKeyLocation::Right) => Some((5.0, 11, 11)),
+        _ => None,
+    };
+
+    if let Some((row, start, end)) = alpha_span {
+        return key_range(keys, row, start, end);
+    }
+
+    match computer_key {
+        ComputerKey::Named(Named::Insert, _) => cluster_key(keys, Cluster::Nav, "Insert"),
+        ComputerKey::Named(Named::Home, _) => cluster_key(keys, Cluster::Nav, "Home"),
+        ComputerKey::Named(Named::PageUp, _) => cluster_key(keys, Cluster::Nav, "PgUp"),
+        ComputerKey::Named(Named::Delete, _) => cluster_key(keys, Cluster::Nav, "Delete"),
+        ComputerKey::Named(Named::End, _) => cluster_key(keys, Cluster::Nav, "End"),
+        ComputerKey::Named(Named::PageDown, _) => cluster_key(keys, Cluster::Nav, "PgDn"),
+        ComputerKey::Named(Named::ArrowUp, _) => cluster_key(keys, Cluster::Arrow, "↑"),
+        ComputerKey::Named(Named::ArrowLeft, _) => cluster_key(keys, Cluster::Arrow, "←"),
+        ComputerKey::Named(Named::ArrowDown, _) => cluster_key(keys, Cluster::Arrow, "↓"),
+        ComputerKey::Named(Named::ArrowRight, _) => cluster_key(keys, Cluster::Arrow, "→"),
+        ComputerKey::Named(Named::NumLock, _) => numpad_range(keys, &[0]),
+        ComputerKey::Named(Named::Enter, ComputerKeyLocation::Numpad) => numpad_range(keys, &[15, 19]),
+        ComputerKey::Character(character, ComputerKeyLocation::Numpad) => {
+            match character.as_str() {
+                "/" => numpad_range(keys, &[1]),
+                "*" => numpad_range(keys, &[2]),
+                "-" => numpad_range(keys, &[3]),
+                "7" => numpad_range(keys, &[4]),
+                "8" => numpad_range(keys, &[5]),
+                "9" => numpad_range(keys, &[6]),
+                "+" => numpad_range(keys, &[7, 11]),
+                "4" => numpad_range(keys, &[8]),
+                "5" => numpad_range(keys, &[9]),
+                "6" => numpad_range(keys, &[10]),
+                "1" => numpad_range(keys, &[12]),
+                "2" => numpad_range(keys, &[13]),
+                "3" => numpad_range(keys, &[14]),
+                "0" => numpad_range(keys, &[16, 17]),
+                "." | "," => numpad_range(keys, &[18]),
+                _ => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn computer_projection_labels(keys: &[Key]) -> HashMap<KeyId, String> {
+    let mut labels = HashMap::new();
+    let mut label_range = |row: f32, start: usize, end: usize, label: &str| {
+        for id in key_range(keys, row, start, end) {
+            labels.insert(id, label.to_string());
+        }
+    };
+
+    for (index, label) in ["`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "⌫"]
+        .iter().enumerate()
+    {
+        label_range(1.0, index, index, label);
+    }
+
+    label_range(2.0, 0, 1, "TAB");
+    for (index, label) in ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\"]
+        .iter().enumerate()
+    {
+        label_range(2.0, index + 2, index + 2, label);
+    }
+
+    label_range(3.0, 0, 0, "CAPS");
+    for (index, label) in ["A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'"]
+        .iter().enumerate()
+    {
+        label_range(3.0, index + 1, index + 1, label);
+    }
+    label_range(3.0, 12, 13, "ENTER");
+
+    label_range(4.0, 0, 1, "SHIFT");
+    for (index, label) in ["Z", "X", "C", "V", "B", "N", "M", ",", ".", "/"]
+        .iter().enumerate()
+    {
+        label_range(4.0, index + 2, index + 2, label);
+    }
+    label_range(4.0, 12, 14, "SHIFT");
+
+    for (start, end, label) in [
+        (0, 0, "CTRL"),
+        (1, 1, "META"),
+        (2, 2, "ALT"),
+        (3, 8, "SPACE"),
+        (9, 9, "ALT"),
+        (10, 10, "META"),
+        (11, 11, "CTRL"),
+    ] {
+        label_range(5.0, start, end, label);
+    }
+
+    labels
 }
 
 /// Closest mode without lookahead (live playback, or the out-of-range nearest-
@@ -562,6 +798,63 @@ impl App {
             .find_map(|(&note, &key_id)| (key_id == id).then_some((note, synth::DRUM_CHANNEL)))
     }
 
+    fn press_board_key(&mut self, id: KeyId) {
+        self.pressed_keys.insert(id);
+        let waveform = self.keys.iter()
+            .find(|key| key.id == id && key.cluster == Cluster::Nav)
+            .and_then(|key| match key.label {
+                "Insert" => Some(synth::Waveform::Triangle),
+                "Home" => Some(synth::Waveform::Square),
+                "PgUp" => Some(synth::Waveform::Saw),
+                _ => None,
+            });
+
+        if let Some(waveform) = waveform {
+            let (waveform_key, waveform) =
+                toggle_waveform(self.waveform_key, id, waveform);
+            self.waveform_key = waveform_key;
+            self.waveform = waveform;
+            if let Some(ref synth) = self.soft_synth {
+                if let Ok(mut synth) = synth.lock() { synth.set_waveform(waveform); }
+            }
+            if let Some(ref h) = self.playback_handle {
+                h.cmd_tx.send(PlayCmd::SetWaveform(waveform)).ok();
+            }
+            return;
+        }
+
+        if let Some((note, channel)) = self.key_sound(id) {
+            if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(ref h) = self.playback_handle {
+                    h.cmd_tx.send(PlayCmd::LiveNoteOn(note, 108, channel)).ok();
+                } else if let Some(ref synth) = self.soft_synth {
+                    if let Ok(mut synth) = synth.lock() { synth.note_on(note, 108, channel); }
+                }
+            }
+        }
+    }
+
+    fn release_board_key(&mut self, id: KeyId) {
+        self.pressed_keys.remove(&id);
+        if let Some((note, channel)) = self.key_sound(id) {
+            if let Some(ref h) = self.playback_handle {
+                h.cmd_tx.send(PlayCmd::LiveNoteOff(note, channel)).ok();
+            } else if let Some(ref synth) = self.soft_synth {
+                if let Ok(mut synth) = synth.lock() { synth.note_off(note, channel); }
+            }
+        }
+    }
+
+    fn release_computer_keys(&mut self) {
+        let keys: Vec<KeyId> = self.computer_keys_down
+            .drain()
+            .flat_map(|(_, keys)| keys)
+            .collect();
+        for id in keys {
+            self.release_board_key(id);
+        }
+    }
+
     fn nearest_keyboard_note(&self, note: u8) -> Option<u8> {
         let s = &self.keyboard_notes_sorted;
         if s.is_empty() { return None; }
@@ -586,51 +879,45 @@ impl App {
 
             // ── Keyboard ──────────────────────────────────────────────────
             Message::KeyPressed(id) => {
-                self.pressed_keys.insert(id);
-                let waveform = self.keys.iter()
-                    .find(|key| key.id == id && key.cluster == Cluster::Nav)
-                    .and_then(|key| match key.label {
-                        "Insert" => Some(synth::Waveform::Triangle),
-                        "Home" => Some(synth::Waveform::Square),
-                        "PgUp" => Some(synth::Waveform::Saw),
-                        _ => None,
-                    });
+                self.press_board_key(id);
+                Task::none()
+            }
 
-                if let Some(waveform) = waveform {
-                    let (waveform_key, waveform) =
-                        toggle_waveform(self.waveform_key, id, waveform);
-                    self.waveform_key = waveform_key;
-                    self.waveform = waveform;
-                    if let Some(ref synth) = self.soft_synth {
-                        if let Ok(mut synth) = synth.lock() { synth.set_waveform(waveform); }
-                    }
-                    if let Some(ref h) = self.playback_handle {
-                        h.cmd_tx.send(PlayCmd::SetWaveform(waveform)).ok();
-                    }
-                    return Task::none();
+            Message::KeyReleased(id) => {
+                self.release_board_key(id);
+                Task::none()
+            }
+
+            Message::ToggleKeyboardHits => {
+                if self.keyboard_hits_enabled {
+                    self.release_computer_keys();
                 }
+                self.keyboard_hits_enabled = !self.keyboard_hits_enabled;
+                Task::none()
+            }
 
-                if let Some((note, channel)) = self.key_sound(id) {
-                    if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
-                        if let Some(ref h) = self.playback_handle {
-                            h.cmd_tx.send(PlayCmd::LiveNoteOn(note, 108, channel)).ok();
-                        } else if let Some(ref synth) = self.soft_synth {
-                            if let Ok(mut synth) = synth.lock() { synth.note_on(note, 108, channel); }
-                        }
+            Message::ComputerKeyPressed(key) => {
+                if self.keyboard_hits_enabled && !self.computer_keys_down.contains_key(&key) {
+                    let targets = mapped_computer_keys(&self.keys, &key);
+                    for &id in &targets {
+                        self.press_board_key(id);
+                    }
+                    self.computer_keys_down.insert(key, targets);
+                }
+                Task::none()
+            }
+
+            Message::ComputerKeyReleased(key) => {
+                if let Some(targets) = self.computer_keys_down.remove(&key) {
+                    for id in targets {
+                        self.release_board_key(id);
                     }
                 }
                 Task::none()
             }
 
-            Message::KeyReleased(id) => {
-                self.pressed_keys.remove(&id);
-                if let Some((note, channel)) = self.key_sound(id) {
-                    if let Some(ref h) = self.playback_handle {
-                        h.cmd_tx.send(PlayCmd::LiveNoteOff(note, channel)).ok();
-                    } else if let Some(ref synth) = self.soft_synth {
-                        if let Ok(mut synth) = synth.lock() { synth.note_off(note, channel); }
-                    }
-                }
+            Message::ReleaseComputerKeys => {
+                self.release_computer_keys();
                 Task::none()
             }
 
@@ -925,8 +1212,13 @@ impl App {
         };
         let resize = iced::window::resize_events()
             .map(|(_, size)| Message::WindowResized(size));
+        let computer_keyboard = if self.keyboard_hits_enabled {
+            iced::event::listen_with(computer_keyboard_event)
+        } else {
+            Subscription::none()
+        };
 
-        Subscription::batch([playback, resize])
+        Subscription::batch([playback, resize, computer_keyboard])
     }
 
     // ---------------------------------------------------------------------------
@@ -1065,6 +1357,16 @@ impl App {
             .style(control_style)
             .on_press(Message::ToggleAudio);
 
+        let keyboard_hits_label = if self.keyboard_hits_enabled {
+            "Computer keys: on"
+        } else {
+            "Computer keys: off"
+        };
+        let keyboard_hits_btn = button(keyboard_hits_label)
+            .padding([8, 12])
+            .style(if self.keyboard_hits_enabled { accent_style } else { control_style })
+            .on_press(Message::ToggleKeyboardHits);
+
         let (progress, time_str) = if let Some(ref f) = self.midi_file {
             let p = if f.total_ticks > 0 {
                 self.position_tick as f32 / f.total_ticks as f32
@@ -1091,7 +1393,7 @@ impl App {
         };
 
         let transport_row = container(row![
-            play_pause_btn, stop_btn, audio_btn,
+            play_pause_btn, stop_btn, audio_btn, keyboard_hits_btn,
             scrubber,
             text(time_str).size(13).color(TEXT_MUTED),
         ]
@@ -1163,6 +1465,7 @@ impl App {
             highlighted: highlighted_ref,
             selected_control: self.waveform_key,
             pressed: &self.pressed_keys,
+            projected_labels: self.keyboard_hits_enabled.then_some(&self.computer_key_labels),
         })
         .width(Length::Fill)
         .height(390.0);
@@ -1229,5 +1532,33 @@ mod tests {
             toggle_waveform(Some(triangle_key), square_key, synth::Waveform::Square);
         assert_eq!(active, Some(square_key));
         assert_eq!(waveform, synth::Waveform::Square);
+    }
+
+    #[test]
+    fn computer_spacebar_spans_six_bottom_row_notes() {
+        let layout = build_layout();
+        let key = ComputerKey::Named(
+            iced::keyboard::key::Named::Space,
+            ComputerKeyLocation::Standard,
+        );
+        let mapped = mapped_computer_keys(&layout.keys, &key);
+        let labels = computer_projection_labels(&layout.keys);
+
+        assert_eq!(mapped.len(), 6);
+        assert!(mapped.iter().all(|id| layout.keys.iter()
+            .find(|candidate| candidate.id == *id)
+            .is_some_and(|candidate| candidate.row == 5.0)));
+        assert!(mapped.iter().all(|id| labels.get(id).is_some_and(|label| label == "SPACE")));
+    }
+
+    #[test]
+    fn computer_numpad_zero_spans_two_drum_pads() {
+        let layout = build_layout();
+        let key = ComputerKey::Character("0".to_string(), ComputerKeyLocation::Numpad);
+        let mapped = mapped_computer_keys(&layout.keys, &key);
+
+        assert_eq!(mapped.len(), 2);
+        assert!(mapped.iter().all(|id| layout.drum_note_to_key.values()
+            .any(|drum_key| drum_key == id)));
     }
 }

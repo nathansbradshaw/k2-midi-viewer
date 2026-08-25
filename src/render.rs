@@ -40,6 +40,8 @@ pub struct BoardCanvas<'a> {
     pub selected_control: Option<KeyId>,
     /// Keys currently held with the pointer.
     pub pressed: &'a HashSet<KeyId>,
+    /// Computer-key labels shown over the note names in performance mode.
+    pub projected_labels: Option<&'a HashMap<KeyId, String>>,
 }
 
 #[derive(Default)]
@@ -102,6 +104,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                 self.highlighted,
                 self.selected_control,
                 self.pressed,
+                self.projected_labels,
             );
         });
         vec![geometry]
@@ -195,6 +198,7 @@ fn draw_board(
     highlighted: &HashMap<KeyId, usize>,
     selected_control: Option<KeyId>,
     pressed: &HashSet<KeyId>,
+    projected_labels: Option<&HashMap<KeyId, String>>,
 ) {
     let size = frame.size();
     let inset_x = board_inset_x(size.width);
@@ -407,22 +411,30 @@ fn draw_board(
             );
         }
 
-        if !key.label.is_empty() {
+        let projected_label = projected_labels.and_then(|labels| labels.get(&key.id));
+        let primary_label = projected_label.map(String::as_str).unwrap_or(key.label);
+        let secondary_label = if projected_label.is_some() && key.midi_note.is_some() {
+            Some(key.label)
+        } else {
+            key.sublabel
+        };
+
+        if !primary_label.is_empty() {
             frame.fill_text(Text {
-                content: key.label.to_string(),
+                content: primary_label.to_string(),
                 position: Point::new(
                     rect.x + rect.width / 2.0,
-                    rect.y + rect.height / 2.0 - if key.sublabel.is_some() { 6.0 } else { 0.0 },
+                    rect.y + rect.height / 2.0 - if secondary_label.is_some() { 6.0 } else { 0.0 },
                 ),
                 color: text_color,
-                size: iced::Pixels(14.0),
+                size: iced::Pixels(if primary_label.len() > 4 { 11.0 } else { 14.0 }),
                 horizontal_alignment: Horizontal::Center,
                 vertical_alignment: Vertical::Center,
                 ..Text::default()
             });
         }
 
-        if let Some(sub) = key.sublabel {
+        if let Some(sub) = secondary_label {
             frame.fill_text(Text {
                 content: sub.to_string(),
                 position: Point::new(
