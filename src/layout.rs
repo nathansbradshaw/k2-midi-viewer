@@ -8,7 +8,26 @@ pub struct Layout {
     pub note_to_all_keys: HashMap<u8, Vec<KeyId>>,
     /// Set of all raw firmware MIDI notes present on this keyboard.
     pub keyboard_notes: HashSet<u8>,
+    /// GM percussion note → drum pad key. Separate from `note_to_all_keys`
+    /// because the firmware dedicates the Numpad cluster to fixed drum-channel
+    /// notes (see keyboard-keyboard/code/src/constants.rs DRUM_NOTE) — a hit
+    /// there isn't octave-shifted or looked up like a melodic key.
+    pub drum_note_to_key: HashMap<u8, KeyId>,
 }
+
+/// GM percussion notes assigned to the Numpad cluster, one per key, in the
+/// same order the keys are declared below.
+///
+/// Confirmed from keyboard-keyboard/code: `constants.rs` DRUM_NOTE assigns
+/// notes 36 (Bass Drum) … 55 (Splash Cymbal) to switches HE81–HE100 in order,
+/// and the KiCad PCB places those 20 switches on a uniform 4-column × 5-row
+/// grid (checked via footprint coordinates — columns at x≈340/359/378/397,
+/// rows at y≈-141/-121/-100/-80/-59, i.e. exactly row-major reading order).
+/// This cluster mirrors that same 4×5 grid, so DRUM_NOTE's linear order maps
+/// directly onto construction order below, top-to-bottom left-to-right.
+pub const DRUM_PAD_NOTES: [u8; 20] = [
+    36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,
+];
 
 // Sharp notes (C#, D#, F#, G#, A#) → dark alpha; naturals → light alpha.
 fn note_cluster(midi: u8) -> Cluster {
@@ -210,7 +229,8 @@ pub fn build_layout() -> Layout {
         Cluster::Arrow,
     ));
 
-    // --- Numpad ---
+    // --- Numpad (doubles as the drum pad cluster — see DRUM_PAD_NOTES) ---
+    let numpad_start = keys.len();
     let np = 20.5;
     keys.push(Key::new(next_id(), "Num", np, 0.0, Cluster::Numpad).sub("Lock"));
     keys.push(Key::new(next_id(), "/", np + 1.0, 0.0, Cluster::Numpad));
@@ -220,11 +240,15 @@ pub fn build_layout() -> Layout {
     keys.push(Key::new(next_id(), "7", np, 1.0, Cluster::Numpad).sub("Home"));
     keys.push(Key::new(next_id(), "8", np + 1.0, 1.0, Cluster::Numpad).sub("↑"));
     keys.push(Key::new(next_id(), "9", np + 2.0, 1.0, Cluster::Numpad).sub("Pg Up"));
-    keys.push(Key::new(next_id(), "+", np + 3.0, 1.0, Cluster::Numpad).size(1.0, 2.0));
+    keys.push(Key::new(next_id(), "+", np + 3.0, 1.0, Cluster::Numpad));
 
     keys.push(Key::new(next_id(), "4", np, 2.0, Cluster::Numpad).sub("←"));
     keys.push(Key::new(next_id(), "5", np + 1.0, 2.0, Cluster::Numpad));
     keys.push(Key::new(next_id(), "6", np + 2.0, 2.0, Cluster::Numpad).sub("→"));
+    // The real board's drum grid is a uniform 4×5 — no key here spans two rows
+    // (confirmed via KiCad footprint coordinates for HE81–HE100), so "+" above
+    // is split into two 1×1 keys instead of one 1×2 key.
+    keys.push(Key::new(next_id(), "+", np + 3.0, 2.0, Cluster::Numpad));
 
     keys.push(Key::new(next_id(), "1", np, 3.0, Cluster::Numpad).sub("End"));
     keys.push(Key::new(next_id(), "2", np + 1.0, 3.0, Cluster::Numpad).sub("↓"));
@@ -247,9 +271,16 @@ pub fn build_layout() -> Layout {
 
     let keyboard_notes: HashSet<u8> = note_to_all_keys.keys().copied().collect();
 
+    let drum_note_to_key: HashMap<u8, KeyId> = keys[numpad_start..]
+        .iter()
+        .zip(DRUM_PAD_NOTES.iter())
+        .map(|(key, &note)| (note, key.id))
+        .collect();
+
     Layout {
         keys,
         note_to_all_keys,
         keyboard_notes,
+        drum_note_to_key,
     }
 }

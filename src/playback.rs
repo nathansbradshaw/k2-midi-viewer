@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -19,12 +19,13 @@ pub enum PlayCmd {
     SeekTo(u64),
     SetAudio(bool),
     SetTrackMuted(usize, bool),
+    SetOctaveOffset(i8),
 }
 
 #[derive(Debug)]
 pub enum PlayEvent {
-    NoteOn(u8, usize), // note, track index
-    NoteOff(u8),
+    NoteOn(u8, usize, u8), // note, track index, channel
+    NoteOff(u8, u8),       // note, channel
     Position(u64),
     Done,
 }
@@ -42,6 +43,8 @@ pub fn spawn(
     audio_enabled: Arc<AtomicBool>,
     track_muted: Vec<bool>,
     midi_conn: Option<midir::MidiOutputConnection>,
+    keyboard_notes: Arc<HashSet<u8>>,
+    octave_offset: i8,
 ) -> PlaybackHandle {
     let (cmd_tx, cmd_rx) = sync_channel(32);
 
@@ -54,7 +57,10 @@ pub fn spawn(
     };
 
     std::thread::spawn(move || {
-        run(file, cmd_rx, events_out, audio_enabled, track_muted, midi_conn, synth);
+        run(
+            file, cmd_rx, events_out, audio_enabled, track_muted, midi_conn, synth,
+            keyboard_notes, octave_offset,
+        );
     });
 
     PlaybackHandle { cmd_tx, _stream: stream }
@@ -110,9 +116,20 @@ fn run(
     mut track_muted: Vec<bool>,
     mut midi_conn: Option<midir::MidiOutputConnection>,
     synth: Option<Arc<Mutex<SoftSynth>>>,
+    keyboard_notes: Arc<HashSet<u8>>,
+    mut octave_offset: i8,
 ) {
     let mut cursor = 0usize;
     let mut playing = false;
+
+    // A note only actually sounds if it lands on a physical key once shifted.
+    // GM percussion (channel 10) is exempt: those note numbers select a drum
+    // sound rather than a pitch, so "does it fit on the keyboard" doesn't apply.
+    let fits_keyboard = |note: u8, channel: u8, octave_offset: i8| -> bool {
+        if channel == crate::synth::DRUM_CHANNEL { return true; }
+        let shifted = (note as i16 + octave_offset as i16).clamp(0, 127) as u8;
+        keyboard_notes.contains(&shifted)
+    };
 
     loop {
         // ── Idle: wait for Play ────────────────────────────────────────────
@@ -128,6 +145,7 @@ fn run(
                     Ok(PlayCmd::SetAudio(v)) => {
                         audio_enabled.store(v, Ordering::Relaxed);
                     }
+                    Ok(PlayCmd::SetOctaveOffset(v)) => { octave_offset = v; }
                     Ok(_) => {}
                     Err(_) => return, // handle dropped — exit thread
                 }
@@ -173,6 +191,7 @@ fn run(
                         audio_enabled.store(v, Ordering::Relaxed);
                         if !v { all_notes_off(&mut midi_conn, &synth); }
                     }
+                    Ok(PlayCmd::SetOctaveOffset(v)) => { octave_offset = v; }
                     Ok(_) => {}
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => return,
@@ -202,24 +221,24 @@ fn run(
             if !muted {
                 match ev.kind {
                     EventKind::NoteOn { note, velocity } => {
-                        if audio {
+                        if audio && fits_keyboard(note, ev.channel, octave_offset) {
                             if let Some(ref mut c) = midi_conn {
                                 c.send(&[0x90 | (ev.channel & 0x0F), note, velocity]).ok();
                             } else if let Some(ref s) = synth {
-                                if let Ok(mut s) = s.lock() { s.note_on(note, velocity); }
+                                if let Ok(mut s) = s.lock() { s.note_on(note, velocity, ev.channel); }
                             }
                         }
-                        events_out.lock().unwrap().push_back(PlayEvent::NoteOn(note, ev.track));
+                        events_out.lock().unwrap().push_back(PlayEvent::NoteOn(note, ev.track, ev.channel));
                     }
                     EventKind::NoteOff { note } => {
-                        if audio {
+                        if audio && fits_keyboard(note, ev.channel, octave_offset) {
                             if let Some(ref mut c) = midi_conn {
                                 c.send(&[0x80 | (ev.channel & 0x0F), note, 0]).ok();
                             } else if let Some(ref s) = synth {
-                                if let Ok(mut s) = s.lock() { s.note_off(note); }
+                                if let Ok(mut s) = s.lock() { s.note_off(note, ev.channel); }
                             }
                         }
-                        events_out.lock().unwrap().push_back(PlayEvent::NoteOff(note));
+                        events_out.lock().unwrap().push_back(PlayEvent::NoteOff(note, ev.channel));
                     }
                 }
             }

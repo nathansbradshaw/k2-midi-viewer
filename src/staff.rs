@@ -1,8 +1,12 @@
+use std::collections::{HashMap, HashSet};
+
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::canvas::{self, Frame, Geometry, Path, Text};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse};
 
-use crate::midi::MidiFile;
+use crate::key::KeyId;
+use crate::midi::{MidiFile, Note};
+use crate::synth::DRUM_CHANNEL;
 use crate::Message;
 
 pub const STAFF_HEIGHT: f32 = 220.0;
@@ -17,6 +21,9 @@ const AHEAD_BEATS: f32 = 12.0;
 // Sharps share their natural's diatonic slot.
 const DIATONIC: [i32; 12] = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6];
 
+const NOTE_NAMES: [&str; 12] =
+    ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
 /// Staff slot for a MIDI note:  0 = C4 (middle C), positive = up, negative = down.
 fn staff_slot(midi: u8) -> i32 {
     let octave = (midi as i32 / 12) - 1; // MIDI 60 = C4 → octave 4
@@ -25,6 +32,22 @@ fn staff_slot(midi: u8) -> i32 {
 
 fn is_sharp(midi: u8) -> bool {
     matches!(midi % 12, 1 | 3 | 6 | 8 | 10)
+}
+
+/// e.g. 60 → "C4"
+pub fn note_name(midi: u8) -> String {
+    let octave = (midi as i32 / 12) - 1;
+    format!("{}{}", NOTE_NAMES[(midi % 12) as usize], octave)
+}
+
+/// Inverse of the `tick_x` mapping used in `draw_staff` — converts a canvas-local
+/// x coordinate back into an absolute tick, given the current scroll position.
+fn x_to_tick(x: f32, width: f32, tpb: u16, pos: u64) -> u64 {
+    let ppb = (width - CLEF_WIDTH) / (BEHIND_BEATS + AHEAD_BEATS);
+    let ppt = ppb / tpb as f32;
+    let playhead_x = CLEF_WIDTH + BEHIND_BEATS * ppb;
+    let dt = (x - playhead_x) as f64 / ppt as f64;
+    (pos as f64 + dt).round().max(0.0) as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -36,20 +59,78 @@ pub struct StaffCanvas<'a> {
     pub position_tick: u64,
     pub track_muted:   &'a [bool],
     pub octave_offset: i8,
+    /// Currently selected (start_tick, end_tick) range, drawn as a highlight band.
+    pub selection:     Option<(u64, u64)>,
+    /// Raw firmware notes present on the melodic keyboard, for the out-of-range check.
+    pub keyboard_notes: &'a HashSet<u8>,
+    /// GM percussion note → drum pad key, for the out-of-range check on channel 10.
+    pub drum_note_to_key: &'a HashMap<u8, KeyId>,
 }
 
 #[derive(Default)]
 pub struct StaffState {
-    cache: canvas::Cache,
+    cache:      canvas::Cache,
+    dragging:   bool,
+    anchor_x:   f32,
 }
 
 impl<'a> canvas::Program<Message> for StaffCanvas<'a> {
     type State = StaffState;
 
     fn update(
-        &self, _s: &mut StaffState, _e: canvas::Event,
-        _b: Rectangle, _c: mouse::Cursor,
+        &self, state: &mut StaffState, event: canvas::Event,
+        bounds: Rectangle, cursor: mouse::Cursor,
     ) -> (canvas::event::Status, Option<Message>) {
+        let Some(f) = self.midi_file else {
+            return (canvas::event::Status::Ignored, None);
+        };
+
+        match event {
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                if let Some(p) = cursor.position_in(bounds) {
+                    if p.x >= CLEF_WIDTH {
+                        state.dragging = true;
+                        state.anchor_x = p.x;
+                        let t = x_to_tick(p.x, bounds.width, f.ticks_per_beat, self.position_tick);
+                        return (
+                            canvas::event::Status::Captured,
+                            Some(Message::StaffSelectionChanged(Some((t, t)))),
+                        );
+                    }
+                }
+            }
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if state.dragging {
+                    if let Some(p) = cursor.position_in(bounds) {
+                        let a = x_to_tick(state.anchor_x, bounds.width, f.ticks_per_beat, self.position_tick);
+                        let b = x_to_tick(p.x, bounds.width, f.ticks_per_beat, self.position_tick);
+                        let range = (a.min(b), a.max(b));
+                        return (
+                            canvas::event::Status::Captured,
+                            Some(Message::StaffSelectionChanged(Some(range))),
+                        );
+                    }
+                }
+            }
+            canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if state.dragging {
+                    state.dragging = false;
+                    let clicked_without_drag = cursor
+                        .position_in(bounds)
+                        .map(|p| (p.x - state.anchor_x).abs() < 4.0)
+                        .unwrap_or(false);
+                    if clicked_without_drag {
+                        return (
+                            canvas::event::Status::Captured,
+                            Some(Message::StaffSelectionChanged(None)),
+                        );
+                    }
+                    return (canvas::event::Status::Captured, None);
+                }
+            }
+            _ => {}
+        }
+
         (canvas::event::Status::Ignored, None)
     }
 
@@ -64,6 +145,8 @@ impl<'a> canvas::Program<Message> for StaffCanvas<'a> {
                 frame, bounds.size(),
                 self.midi_file, self.position_tick,
                 self.track_muted, self.octave_offset,
+                self.selection,
+                self.keyboard_notes, self.drum_note_to_key,
             );
         });
         vec![geo]
@@ -92,6 +175,23 @@ fn track_note_color(track: usize, is_active: bool, is_past: bool) -> Color {
     }
 }
 
+/// Whether `note` lands on a physical key — a drum pad for channel 10, or the
+/// octave-shifted melodic keyboard otherwise. Mirrors the logic in main.rs's
+/// rebuild_all_notes_cache, kept in sync so the staff and keyboard agree.
+fn note_fits(
+    note: &Note,
+    keyboard_notes: &HashSet<u8>,
+    drum_note_to_key: &HashMap<u8, KeyId>,
+    octave_offset: i8,
+) -> bool {
+    if note.channel == DRUM_CHANNEL {
+        drum_note_to_key.contains_key(&note.midi_note)
+    } else {
+        let shifted = (note.midi_note as i16 + octave_offset as i16).clamp(0, 127) as u8;
+        keyboard_notes.contains(&shifted)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
@@ -103,6 +203,9 @@ fn draw_staff(
     pos: u64,
     track_muted: &[bool],
     octave_offset: i8,
+    selection: Option<(u64, u64)>,
+    keyboard_notes: &HashSet<u8>,
+    drum_note_to_key: &HashMap<u8, KeyId>,
 ) {
     let w = size.width;
     let h = size.height;
@@ -133,6 +236,25 @@ fn draw_staff(
 
     let tick_x  = |t: u64|  -> f32 { playhead_x + (t as f64 - pos as f64) as f32 * ppt };
     let slot_y  = |s: i32|  -> f32 { ref_y - s as f32 * HALF_SPACE };
+
+    // ── Selection band ──────────────────────────────────────────────────────
+    if let Some((s, e)) = selection {
+        let x0 = tick_x(s).max(CLEF_WIDTH);
+        let x1 = tick_x(e).min(w);
+        if x1 > x0 {
+            let band_col = Color::from_rgb8(0x4F, 0xC3, 0xF7);
+            frame.fill(
+                &Path::rectangle(Point::new(x0, 0.0), Size::new(x1 - x0, h)),
+                Color { a: 0.14, ..band_col },
+            );
+            for x in [x0, x1] {
+                frame.stroke(
+                    &Path::line(Point::new(x, 0.0), Point::new(x, h)),
+                    canvas::Stroke::default().with_color(Color { a: 0.8, ..band_col }).with_width(1.5),
+                );
+            }
+        }
+    }
 
     // ── Staff lines ──────────────────────────────────────────────────────────
     let line_col = Color::from_rgb8(0x60, 0x60, 0x70);
@@ -211,6 +333,7 @@ fn draw_staff(
         let is_active = note.start_tick <= pos && pos < note.end_tick;
         let is_past   = note.end_tick   <= pos;
 
+        let fits = note_fits(note, keyboard_notes, drum_note_to_key, octave_offset);
         let note_col = track_note_color(note.track, is_active, is_past);
 
         // Duration bar — a thin semi-transparent strip showing note length
@@ -230,6 +353,17 @@ fn draw_staff(
 
         // Note head (filled circle)
         frame.fill(&Path::circle(Point::new(x, y), note_r), note_col);
+
+        // Out-of-range warning ring — always drawn at full strength, independent
+        // of the active/past dimming above, so it never fades into the background.
+        if !fits {
+            frame.stroke(
+                &Path::circle(Point::new(x, y), note_r + 3.5),
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba8(0xFF, 0x40, 0x30, 0.95))
+                    .with_width(2.2),
+            );
+        }
 
         // Stem — up when below the middle line, down when above
         let middle = if slot >= 0 { 6 } else { -6 }; // B4 (treble) or D3 (bass)

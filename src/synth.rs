@@ -3,12 +3,19 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-const MAX_VOICES: usize = 16;
+use crate::drums::{midi_note_to_drum_type, DrumSampler};
+
+/// GM convention: MIDI channel 10 (0-indexed 9) is the percussion channel.
+pub const DRUM_CHANNEL: u8 = 9;
+
+const MAX_VOICES:      usize = 16;
+const MAX_DRUM_VOICES: usize = 12;
 const ATTACK_S:   f32 = 0.005; // 5 ms
 const DECAY_S:    f32 = 0.30;
 const SUSTAIN:    f32 = 0.55;
 const RELEASE_S:  f32 = 0.25;
 const VOICE_GAIN: f32 = 0.22; // per-voice scale; keeps mix below 0 dBFS
+const DRUM_GAIN:  f32 = 0.6;  // drum engine output is already near full-scale
 
 fn midi_to_hz(note: u8) -> f32 {
     440.0 * 2f32.powf((note as f32 - 69.0) / 12.0)
@@ -27,18 +34,38 @@ struct Voice {
     lp:    f32, // one-pole low-pass state
 }
 
+struct DrumVoice {
+    sampler: DrumSampler,
+    vel:     f32, // 0–1
+}
+
 pub struct SoftSynth {
-    voices:   Vec<Voice>,
-    sr:       f32,
-    channels: usize,
+    voices:      Vec<Voice>,
+    drum_voices: Vec<DrumVoice>,
+    sr:          f32,
+    channels:    usize,
 }
 
 impl SoftSynth {
     pub fn new(sr: f32, channels: usize) -> Self {
-        Self { voices: Vec::new(), sr, channels }
+        Self { voices: Vec::new(), drum_voices: Vec::new(), sr, channels }
     }
 
-    pub fn note_on(&mut self, note: u8, velocity: u8) {
+    pub fn note_on(&mut self, note: u8, velocity: u8, channel: u8) {
+        if channel == DRUM_CHANNEL {
+            let Some(drum_type) = midi_note_to_drum_type(note) else { return };
+
+            if self.drum_voices.len() >= MAX_DRUM_VOICES {
+                let pos = self.drum_voices.iter().position(|d| d.sampler.is_finished())
+                    .unwrap_or(0);
+                self.drum_voices.remove(pos);
+            }
+            let mut sampler = DrumSampler::new();
+            sampler.trigger_at(drum_type, self.sr);
+            self.drum_voices.push(DrumVoice { sampler, vel: velocity as f32 / 127.0 });
+            return;
+        }
+
         // Retrigger existing voice so the same key doesn't build up
         if let Some(v) = self.voices.iter_mut()
             .find(|v| v.note == note && v.stage != Stage::Done)
@@ -64,7 +91,10 @@ impl SoftSynth {
         });
     }
 
-    pub fn note_off(&mut self, note: u8) {
+    pub fn note_off(&mut self, note: u8, channel: u8) {
+        // Drum hits are one-shots — GM percussion ignores note-off.
+        if channel == DRUM_CHANNEL { return; }
+
         for v in &mut self.voices {
             if v.note == note && matches!(v.stage, Stage::Attack | Stage::Decay | Stage::Sustain) {
                 v.stage = Stage::Release;
@@ -76,6 +106,7 @@ impl SoftSynth {
         for v in &mut self.voices {
             if v.stage != Stage::Done { v.stage = Stage::Release; }
         }
+        self.drum_voices.clear();
     }
 
     pub fn render(&mut self, data: &mut [f32]) {
@@ -125,6 +156,15 @@ impl SoftSynth {
                 for samp in frame.iter_mut() { *samp += s; }
             }
         }
+
+        for d in &mut self.drum_voices {
+            let gain = d.vel * DRUM_GAIN;
+            for frame in data.chunks_exact_mut(ch) {
+                let s = d.sampler.next_value() * gain;
+                for samp in frame.iter_mut() { *samp += s; }
+            }
+        }
+        self.drum_voices.retain(|d| !d.sampler.is_finished());
 
         // Soft clip to prevent digital distortion
         for s in data.iter_mut() { *s = s.clamp(-1.0, 1.0); }
