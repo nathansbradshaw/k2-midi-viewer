@@ -8,6 +8,29 @@ use crate::drums::{midi_note_to_drum_type, DrumSampler};
 /// GM convention: MIDI channel 10 (0-indexed 9) is the percussion channel.
 pub const DRUM_CHANNEL: u8 = 9;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Waveform {
+    #[default]
+    Organ,
+    Triangle,
+    Square,
+    Saw,
+}
+
+impl Waveform {
+    fn sample(self, phase: f32) -> f32 {
+        match self {
+            Waveform::Organ => {
+                let a = phase * TAU;
+                a.sin() + 0.35 * (2.0 * a).sin() + 0.12 * (3.0 * a).sin()
+            }
+            Waveform::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
+            Waveform::Square => if phase < 0.5 { 1.0 } else { -1.0 },
+            Waveform::Saw => 2.0 * phase - 1.0,
+        }
+    }
+}
+
 const MAX_VOICES:      usize = 16;
 const MAX_DRUM_VOICES: usize = 12;
 const ATTACK_S:   f32 = 0.005; // 5 ms
@@ -44,11 +67,22 @@ pub struct SoftSynth {
     drum_voices: Vec<DrumVoice>,
     sr:          f32,
     channels:    usize,
+    waveform:    Waveform,
 }
 
 impl SoftSynth {
     pub fn new(sr: f32, channels: usize) -> Self {
-        Self { voices: Vec::new(), drum_voices: Vec::new(), sr, channels }
+        Self {
+            voices: Vec::new(),
+            drum_voices: Vec::new(),
+            sr,
+            channels,
+            waveform: Waveform::default(),
+        }
+    }
+
+    pub fn set_waveform(&mut self, waveform: Waveform) {
+        self.waveform = waveform;
     }
 
     pub fn note_on(&mut self, note: u8, velocity: u8, channel: u8) {
@@ -118,18 +152,17 @@ impl SoftSynth {
         let decay_rate   = (1.0 - SUSTAIN) / (DECAY_S  * sr);
         let release_rate = SUSTAIN / (RELEASE_S * sr);
         let lp_coeff     = 0.30f32; // ≈ 6 kHz cutoff at 44.1 kHz
+        let waveform     = self.waveform;
 
         for v in &mut self.voices {
             if v.stage == Stage::Done { continue; }
             let gain = v.vel * VOICE_GAIN;
 
             for frame in data.chunks_exact_mut(ch) {
-                // Oscillator: fundamental + 2nd + 3rd harmonic (organ-like timbre)
+                // Waveform selection only applies to melodic voices. Drum
+                // voices are rendered by their dedicated sampler below.
                 v.phase = (v.phase + v.inc).fract();
-                let a = v.phase * TAU;
-                let wave = a.sin()
-                    + 0.35 * (2.0 * a).sin()
-                    + 0.12 * (3.0 * a).sin();
+                let wave = waveform.sample(v.phase);
 
                 // One-pole low-pass filter (soften high harmonics)
                 v.lp += lp_coeff * (wave - v.lp);
@@ -205,4 +238,45 @@ pub fn start_soft_synth() -> Option<(Arc<Mutex<SoftSynth>>, cpal::Stream)> {
 
     stream.play().ok()?;
     Some((synth, stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(actual: f32, expected: f32) {
+        assert!((actual - expected).abs() < 0.0001, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn selectable_waveforms_have_the_expected_shape() {
+        close(Waveform::Triangle.sample(0.0), -1.0);
+        close(Waveform::Triangle.sample(0.5), 1.0);
+        close(Waveform::Square.sample(0.25), 1.0);
+        close(Waveform::Square.sample(0.75), -1.0);
+        close(Waveform::Saw.sample(0.0), -1.0);
+        close(Waveform::Saw.sample(0.5), 0.0);
+    }
+
+    #[test]
+    fn waveform_selection_does_not_replace_the_drum_engine() {
+        let mut synth = SoftSynth::new(48_000.0, 2);
+        synth.note_on(36, 100, DRUM_CHANNEL);
+        synth.set_waveform(Waveform::Saw);
+
+        assert!(synth.voices.is_empty());
+        assert_eq!(synth.drum_voices.len(), 1);
+    }
+
+    #[test]
+    fn live_melodic_notes_follow_press_and_release() {
+        let mut synth = SoftSynth::new(48_000.0, 2);
+        synth.note_on(60, 108, 0);
+
+        assert_eq!(synth.voices.len(), 1);
+        assert!(matches!(synth.voices[0].stage, Stage::Attack));
+
+        synth.note_off(60, 0);
+        assert!(matches!(synth.voices[0].stage, Stage::Release));
+    }
 }

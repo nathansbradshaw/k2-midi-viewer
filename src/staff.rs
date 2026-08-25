@@ -9,7 +9,7 @@ use crate::midi::{MidiFile, Note};
 use crate::synth::DRUM_CHANNEL;
 use crate::Message;
 
-pub const STAFF_HEIGHT: f32 = 220.0;
+pub const STAFF_HEIGHT: f32 = 180.0;
 
 const LINE_SPACING: f32 = 12.0;
 const HALF_SPACE: f32 = LINE_SPACING / 2.0;
@@ -192,6 +192,95 @@ fn note_fits(
     }
 }
 
+fn draw_treble_clef(frame: &mut Frame, g_line_y: f32, color: Color) {
+    let stroke = canvas::Stroke::default()
+        .with_color(color)
+        .with_width(2.8)
+        .with_line_cap(canvas::LineCap::Round)
+        .with_line_join(canvas::LineJoin::Round);
+
+    let stem = Path::new(|b| {
+        b.move_to(Point::new(31.0, g_line_y + 38.0));
+        b.bezier_curve_to(
+            Point::new(35.0, g_line_y + 19.0),
+            Point::new(32.0, g_line_y - 3.0),
+            Point::new(29.0, g_line_y - 20.0),
+        );
+        b.bezier_curve_to(
+            Point::new(26.0, g_line_y - 35.0),
+            Point::new(30.0, g_line_y - 45.0),
+            Point::new(35.0, g_line_y - 48.0),
+        );
+        b.bezier_curve_to(
+            Point::new(42.0, g_line_y - 39.0),
+            Point::new(36.0, g_line_y - 27.0),
+            Point::new(29.0, g_line_y - 20.0),
+        );
+    });
+    frame.stroke(&stem, stroke);
+
+    let spiral = Path::new(|b| {
+        b.move_to(Point::new(31.0, g_line_y - 17.0));
+        b.bezier_curve_to(
+            Point::new(13.0, g_line_y - 12.0),
+            Point::new(14.0, g_line_y + 12.0),
+            Point::new(31.0, g_line_y + 14.0),
+        );
+        b.bezier_curve_to(
+            Point::new(47.0, g_line_y + 16.0),
+            Point::new(49.0, g_line_y - 5.0),
+            Point::new(36.0, g_line_y - 9.0),
+        );
+        b.bezier_curve_to(
+            Point::new(25.0, g_line_y - 13.0),
+            Point::new(21.0, g_line_y - 1.0),
+            Point::new(27.0, g_line_y + 5.0),
+        );
+        b.bezier_curve_to(
+            Point::new(33.0, g_line_y + 11.0),
+            Point::new(43.0, g_line_y + 5.0),
+            Point::new(40.0, g_line_y - 2.0),
+        );
+    });
+    frame.stroke(&spiral, stroke);
+
+    let hook = Path::new(|b| {
+        b.move_to(Point::new(32.0, g_line_y + 22.0));
+        b.bezier_curve_to(
+            Point::new(45.0, g_line_y + 23.0),
+            Point::new(42.0, g_line_y + 39.0),
+            Point::new(28.0, g_line_y + 38.0),
+        );
+    });
+    frame.stroke(&hook, stroke);
+}
+
+fn draw_bass_clef(frame: &mut Frame, f_line_y: f32, color: Color) {
+    let stroke = canvas::Stroke::default()
+        .with_color(color)
+        .with_width(3.0)
+        .with_line_cap(canvas::LineCap::Round)
+        .with_line_join(canvas::LineJoin::Round);
+
+    let curve = Path::new(|b| {
+        b.move_to(Point::new(17.0, f_line_y - 1.0));
+        b.bezier_curve_to(
+            Point::new(20.0, f_line_y - 17.0),
+            Point::new(42.0, f_line_y - 17.0),
+            Point::new(43.0, f_line_y - 2.0),
+        );
+        b.bezier_curve_to(
+            Point::new(44.0, f_line_y + 13.0),
+            Point::new(31.0, f_line_y + 23.0),
+            Point::new(18.0, f_line_y + 25.0),
+        );
+    });
+    frame.stroke(&curve, stroke);
+    frame.fill(&Path::circle(Point::new(17.5, f_line_y - 1.0), 4.5), color);
+    frame.fill(&Path::circle(Point::new(49.0, f_line_y - 6.0), 2.6), color);
+    frame.fill(&Path::circle(Point::new(49.0, f_line_y + 6.0), 2.6), color);
+}
+
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
@@ -212,14 +301,14 @@ fn draw_staff(
 
     frame.fill(
         &Path::rectangle(Point::ORIGIN, size),
-        Color::from_rgb8(0x10, 0x10, 0x14),
+        Color::from_rgb8(0x09, 0x09, 0x15),
     );
 
     let Some(f) = midi else {
         frame.fill_text(Text {
             content: "Load a MIDI file to see staff notation".to_string(),
             position: Point::new(w / 2.0, h / 2.0),
-            color: Color::from_rgb8(0x58, 0x58, 0x68),
+            color: Color::from_rgb8(0x76, 0x62, 0x7E),
             size: iced::Pixels(15.0),
             horizontal_alignment: Horizontal::Center,
             vertical_alignment: Vertical::Center,
@@ -242,7 +331,7 @@ fn draw_staff(
         let x0 = tick_x(s).max(CLEF_WIDTH);
         let x1 = tick_x(e).min(w);
         if x1 > x0 {
-            let band_col = Color::from_rgb8(0x4F, 0xC3, 0xF7);
+            let band_col = Color::from_rgb8(0x45, 0xD4, 0xCB);
             frame.fill(
                 &Path::rectangle(Point::new(x0, 0.0), Size::new(x1 - x0, h)),
                 Color { a: 0.14, ..band_col },
@@ -257,7 +346,7 @@ fn draw_staff(
     }
 
     // ── Staff lines ──────────────────────────────────────────────────────────
-    let line_col = Color::from_rgb8(0x60, 0x60, 0x70);
+    let line_col = Color::from_rgb8(0x4A, 0x35, 0x54);
     for &s in &[2i32, 4, 6, 8, 10, -2i32, -4, -6, -8, -10] {
         frame.stroke(
             &Path::line(Point::new(CLEF_WIDTH - 4.0, slot_y(s)), Point::new(w, slot_y(s))),
@@ -274,7 +363,7 @@ fn draw_staff(
         let vis_start = pos.saturating_sub(((BEHIND_BEATS + 1.0) * tpb) as u64);
         let vis_end   = pos + ((AHEAD_BEATS + 1.0) * tpb) as u64;
         let first     = (vis_start / ticks_per_bar) * ticks_per_bar;
-        let bar_col   = Color::from_rgb8(0x3C, 0x3C, 0x4C);
+        let bar_col   = Color::from_rgb8(0x2B, 0x20, 0x38);
         let mut bt    = first;
         while bt <= vis_end {
             let x = tick_x(bt);
@@ -292,27 +381,9 @@ fn draw_staff(
     }
 
     // ── Clef symbols ────────────────────────────────────────────────────────
-    let clef_col = Color::from_rgb8(0xB8, 0xB8, 0xC8);
-    // Treble clef 𝄞 (U+1D11E): visually centres on G4 (slot 4) line
-    frame.fill_text(Text {
-        content: "\u{1D11E}".to_string(),
-        position: Point::new(6.0, slot_y(4) - 32.0),
-        color: clef_col,
-        size: iced::Pixels(54.0),
-        horizontal_alignment: Horizontal::Left,
-        vertical_alignment: Vertical::Top,
-        ..Text::default()
-    });
-    // Bass clef 𝄢 (U+1D122): visually centres on F3 (slot -4) line
-    frame.fill_text(Text {
-        content: "\u{1D122}".to_string(),
-        position: Point::new(6.0, slot_y(-4) - 10.0),
-        color: clef_col,
-        size: iced::Pixels(30.0),
-        horizontal_alignment: Horizontal::Left,
-        vertical_alignment: Vertical::Top,
-        ..Text::default()
-    });
+    let clef_col = Color::from_rgb8(0xED, 0xC8, 0x9C);
+    draw_treble_clef(frame, slot_y(4), clef_col);
+    draw_bass_clef(frame, slot_y(-4), clef_col);
 
     // ── Notes ───────────────────────────────────────────────────────────────
     let vis_start = pos.saturating_sub(((BEHIND_BEATS + 1.0) * tpb) as u64);
@@ -393,7 +464,7 @@ fn draw_staff(
     frame.stroke(
         &Path::line(Point::new(playhead_x, slot_y(13)), Point::new(playhead_x, slot_y(-13))),
         canvas::Stroke::default()
-            .with_color(Color::from_rgba8(0x70, 0xB8, 0xFF, 0.75))
+            .with_color(Color::from_rgba8(0xFF, 0x4F, 0x87, 0.92))
             .with_width(2.0),
     );
 }

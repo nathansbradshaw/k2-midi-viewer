@@ -1,6 +1,11 @@
 use crate::key::{Cluster, Key, KeyId};
 use std::collections::{HashMap, HashSet};
 
+/// Horizontal anchors for the keyboard's three major sections. Their spacing
+/// is one compact half-unit gap, matching the arrow-to-numpad separation.
+pub const NAV_COL: f32 = 15.5;
+pub const NUMPAD_COL: f32 = 19.0;
+
 pub struct Layout {
     pub keys: Vec<Key>,
     /// All KeyIds for each note, ordered top-row first (Row 1 → Row 5).
@@ -171,22 +176,22 @@ pub fn build_layout() -> Layout {
     keys.push(Key::new(next_id(), note_name(m), 13.5, 5.0, note_cluster(m)).note(m));
 
     // --- Nav ---
-    let nav_col = 16.5;
-    keys.push(Key::new(next_id(), "Insert", nav_col, 1.0, Cluster::Nav));
+    let nav_col = NAV_COL;
+    keys.push(Key::new(next_id(), "Insert", nav_col, 1.0, Cluster::Nav).sub("Triangle"));
     keys.push(Key::new(
         next_id(),
         "Home",
         nav_col + 1.0,
         1.0,
         Cluster::Nav,
-    ));
+    ).sub("Square"));
     keys.push(Key::new(
         next_id(),
         "PgUp",
         nav_col + 2.0,
         1.0,
         Cluster::Nav,
-    ));
+    ).sub("Saw"));
     keys.push(Key::new(next_id(), "Delete", nav_col, 2.0, Cluster::Nav));
     keys.push(Key::new(next_id(), "End", nav_col + 1.0, 2.0, Cluster::Nav));
     keys.push(Key::new(
@@ -198,7 +203,7 @@ pub fn build_layout() -> Layout {
     ));
 
     // --- Arrow ---
-    let arrow_col = nav_col + 0.5;
+    let arrow_col = nav_col;
     let arrow_row = 4.0;
     keys.push(Key::new(
         next_id(),
@@ -231,7 +236,7 @@ pub fn build_layout() -> Layout {
 
     // --- Numpad (doubles as the drum pad cluster — see DRUM_PAD_NOTES) ---
     let numpad_start = keys.len();
-    let np = 20.5;
+    let np = NUMPAD_COL;
     keys.push(Key::new(next_id(), "Num", np, 0.0, Cluster::Numpad).sub("Lock"));
     keys.push(Key::new(next_id(), "/", np + 1.0, 0.0, Cluster::Numpad));
     keys.push(Key::new(next_id(), "*", np + 2.0, 0.0, Cluster::Numpad));
@@ -282,5 +287,37 @@ pub fn build_layout() -> Layout {
         note_to_all_keys,
         keyboard_notes,
         drum_note_to_key,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::key_rect;
+
+    fn horizontal_bounds(layout: &Layout, cluster: Cluster) -> (f32, f32) {
+        layout.keys.iter()
+            .filter(|key| key.cluster == cluster)
+            .map(key_rect)
+            .fold((f32::MAX, f32::MIN), |(left, right), rect| {
+                (left.min(rect.x), right.max(rect.x + rect.width))
+            })
+    }
+
+    #[test]
+    fn right_hand_sections_share_alignment_and_spacing() {
+        let layout = build_layout();
+        let alpha = layout.keys.iter()
+            .filter(|key| matches!(key.cluster, Cluster::Alpha | Cluster::AlphaLight))
+            .map(key_rect)
+            .fold((f32::MAX, f32::MIN), |(left, right), rect| {
+                (left.min(rect.x), right.max(rect.x + rect.width))
+            });
+        let nav = horizontal_bounds(&layout, Cluster::Nav);
+        let arrows = horizontal_bounds(&layout, Cluster::Arrow);
+        let numpad = horizontal_bounds(&layout, Cluster::Numpad);
+
+        assert_eq!(nav, arrows);
+        assert_eq!(nav.0 - alpha.1, numpad.0 - arrows.1);
     }
 }

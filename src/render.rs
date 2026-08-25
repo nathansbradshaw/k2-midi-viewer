@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::canvas::{self, Frame, Geometry, Path, Text};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 use crate::key::{Cluster, Key, KeyId};
+use crate::layout::{NAV_COL, NUMPAD_COL};
 use crate::Message;
 
 /// Per-track highlight palette — cycled for files with more than 8 tracks.
@@ -22,16 +23,29 @@ pub const TRACK_COLORS: &[(u8, u8, u8)] = &[
 
 pub const UNIT: f32 = 54.0;
 pub const GAP: f32 = 4.0;
+const BOARD_INSET_Y: f32 = 28.0;
+const NUMPAD_Y_OFFSET: f32 = UNIT + GAP;
+const BOARD_LAYOUT_WIDTH: f32 = 1330.0;
+const MIN_BOARD_INSET_X: f32 = 8.0;
+
+fn board_inset_x(width: f32) -> f32 {
+    ((width - BOARD_LAYOUT_WIDTH) / 2.0).max(MIN_BOARD_INSET_X)
+}
 
 pub struct BoardCanvas<'a> {
     pub keys:        &'a [Key],
     /// Maps KeyId → track index for color. usize::MAX = manually toggled (uses original colour).
     pub highlighted: &'a HashMap<KeyId, usize>,
+    /// A persistent control selection, independent of playback note overlays.
+    pub selected_control: Option<KeyId>,
+    /// Keys currently held with the pointer.
+    pub pressed: &'a HashSet<KeyId>,
 }
 
 #[derive(Default)]
 pub struct CanvasState {
     cache: canvas::Cache,
+    pressed: Option<KeyId>,
 }
 
 impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
@@ -39,22 +53,35 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
 
     fn update(
         &self,
-        _state: &mut Self::State,
+        state: &mut Self::State,
         event: canvas::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> (canvas::event::Status, Option<Message>) {
-        if let canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event {
-            if let Some(pos) = cursor.position_in(bounds) {
-                for key in self.keys {
-                    if key_rect(key).contains(pos) {
-                        return (
-                            canvas::event::Status::Captured,
-                            Some(Message::Toggle(key.id)),
-                        );
+        match event {
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                if let Some(pos) = cursor.position_in(bounds) {
+                    let inset_x = board_inset_x(bounds.width);
+                    for key in self.keys {
+                        if key_rect_with_inset(key, inset_x).contains(pos) {
+                            state.pressed = Some(key.id);
+                            return (
+                                canvas::event::Status::Captured,
+                                Some(Message::KeyPressed(key.id)),
+                            );
+                        }
                     }
                 }
             }
+            canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if let Some(id) = state.pressed.take() {
+                    return (
+                        canvas::event::Status::Captured,
+                        Some(Message::KeyReleased(id)),
+                    );
+                }
+            }
+            _ => {}
         }
         (canvas::event::Status::Ignored, None)
     }
@@ -69,7 +96,13 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
     ) -> Vec<Geometry> {
         state.cache.clear(); // highlighted set changes every 16 ms during playback
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
-            draw_board(frame, self.keys, self.highlighted);
+            draw_board(
+                frame,
+                self.keys,
+                self.highlighted,
+                self.selected_control,
+                self.pressed,
+            );
         });
         vec![geometry]
     }
@@ -81,8 +114,9 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         if let Some(pos) = cursor.position_in(bounds) {
+            let inset_x = board_inset_x(bounds.width);
             for key in self.keys {
-                if key_rect(key).contains(pos) {
+                if key_rect_with_inset(key, inset_x).contains(pos) {
                     return mouse::Interaction::Pointer;
                 }
             }
@@ -91,10 +125,20 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
     }
 }
 
+#[cfg(test)]
 pub fn key_rect(key: &Key) -> Rectangle {
+    key_rect_with_inset(key, board_inset_x(1484.0))
+}
+
+fn key_rect_with_inset(key: &Key, inset_x: f32) -> Rectangle {
+    let cluster_y = if key.cluster == Cluster::Numpad {
+        NUMPAD_Y_OFFSET
+    } else {
+        0.0
+    };
     Rectangle {
-        x: key.col * (UNIT + GAP),
-        y: key.row * (UNIT + GAP),
+        x: inset_x + key.col * (UNIT + GAP),
+        y: BOARD_INSET_Y + key.row * (UNIT + GAP) + cluster_y,
         width: key.w * UNIT + (key.w - 1.0).max(0.0) * GAP,
         height: key.h * UNIT + (key.h - 1.0).max(0.0) * GAP,
     }
@@ -108,7 +152,7 @@ fn key_colors(cluster: Cluster, lit_track: Option<usize>) -> (Color, Color, Colo
     // For MIDI keys, use the track colour; fall back to gold for non-MIDI clusters.
     // usize::MAX - 1 = out-of-range warning (nearest key to a note off the board)
     if lit_track == Some(usize::MAX - 1) {
-        let fill = rgb(0xE5, 0x50, 0x30);
+        let fill = rgb(0xFF, 0x3D, 0x72);
         return (fill, Color::WHITE, Color { a: 0.88, ..fill });
     }
 
@@ -123,17 +167,17 @@ fn key_colors(cluster: Cluster, lit_track: Option<usize>) -> (Color, Color, Colo
     };
 
     let (fill, text) = match (cluster, lit) {
-        (Cluster::Alpha,      false) => (rgb(0x80, 0x8E, 0x62), Color::BLACK),
-        (Cluster::Alpha,      true)  => track_fill(0x9B, 0xE6, 0x6B),
-        (Cluster::AlphaLight, false) => (rgb(0xCC, 0xD8, 0xBC), Color::BLACK),
-        (Cluster::AlphaLight, true)  => track_fill(0x9B, 0xE6, 0x6B),
-        (Cluster::Nav,        false) => (rgb(0xCE, 0xCB, 0xC2), Color::BLACK),
-        (Cluster::Nav,        true)  => (rgb(0xF5, 0xD9, 0x5E), Color::BLACK),
-        (Cluster::Arrow,      false) => (rgb(0xD8, 0x8B, 0x66), Color::BLACK),
-        (Cluster::Arrow,      true)  => (rgb(0xFF, 0xA9, 0x4D), Color::BLACK),
-        (Cluster::Numpad,     false) => (rgb(0xD8, 0xD5, 0xCB), Color::BLACK),
-        (Cluster::Numpad,     true)  => (rgb(0xF5, 0xD9, 0x5E), Color::BLACK),
-        (Cluster::Encoder,    _)     => (rgb(0xB8, 0xBE, 0xC2), Color::BLACK),
+        (Cluster::Alpha,      false) => (rgb(0x70, 0x62, 0x86), Color::WHITE),
+        (Cluster::Alpha,      true)  => track_fill(0xFF, 0xA3, 0x55),
+        (Cluster::AlphaLight, false) => (rgb(0xE6, 0xD9, 0xBD), Color::BLACK),
+        (Cluster::AlphaLight, true)  => track_fill(0xFF, 0xA3, 0x55),
+        (Cluster::Nav,        false) => (rgb(0xC8, 0xB8, 0xC9), Color::BLACK),
+        (Cluster::Nav,        true)  => (rgb(0xFF, 0xB4, 0x58), Color::BLACK),
+        (Cluster::Arrow,      false) => (rgb(0xEF, 0x70, 0x68), Color::BLACK),
+        (Cluster::Arrow,      true)  => (rgb(0xFF, 0x4C, 0x82), Color::WHITE),
+        (Cluster::Numpad,     false) => (rgb(0xD8, 0xCC, 0xBC), Color::BLACK),
+        (Cluster::Numpad,     true)  => (rgb(0x50, 0xD4, 0xC8), Color::BLACK),
+        (Cluster::Encoder,    _)     => (rgb(0x1D, 0x1B, 0x28), Color::WHITE),
     };
 
     // Glow ring matches the fill colour at high opacity.
@@ -145,25 +189,184 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb8(r, g, b)
 }
 
-fn draw_board(frame: &mut Frame, keys: &[Key], highlighted: &HashMap<KeyId, usize>) {
-    let bg = Path::rectangle(Point::ORIGIN, frame.size());
-    frame.fill(&bg, rgb(0x0A, 0x0A, 0x0A));
+fn draw_board(
+    frame: &mut Frame,
+    keys: &[Key],
+    highlighted: &HashMap<KeyId, usize>,
+    selected_control: Option<KeyId>,
+    pressed: &HashSet<KeyId>,
+) {
+    let size = frame.size();
+    let inset_x = board_inset_x(size.width);
 
-    let pcb_green = Path::rectangle(
-        Point::new(0.0, 0.0),
-        Size::new(16.0 * (UNIT + GAP), 6.0 * (UNIT + GAP)),
-    );
-    frame.fill(&pcb_green, rgb(0x16, 0x6B, 0x3A));
+    // The real K2 is one substantial, warm-grey enclosure. Keeping the board
+    // visually continuous makes the unusual clusters read as one instrument.
+    frame.fill(&Path::rectangle(Point::ORIGIN, size), rgb(0x08, 0x08, 0x13));
+    if size.width > 8.0 && size.height > 8.0 {
+        let shadow = rounded_rect(
+            Rectangle { x: 3.0, y: 5.0, width: size.width - 6.0, height: size.height - 7.0 },
+            18.0,
+        );
+        frame.fill(&shadow, Color::from_rgba8(0, 0, 0, 0.48));
 
-    let pcb_red = Path::rectangle(
-        Point::new(16.0 * (UNIT + GAP), 0.0),
-        Size::new(9.5 * (UNIT + GAP), 6.0 * (UNIT + GAP)),
+        let case = rounded_rect(
+            Rectangle { x: 2.0, y: 1.0, width: size.width - 4.0, height: size.height - 8.0 },
+            18.0,
+        );
+        frame.fill(&case, rgb(0x35, 0x28, 0x40));
+        frame.stroke(
+            &case,
+            canvas::Stroke::default().with_color(rgb(0xA3, 0x56, 0x78)).with_width(1.5),
+        );
+    }
+
+    // Recessed switch plates. They are deliberately subtle; the key colours,
+    // not giant background blocks, carry the functional grouping.
+    let alpha_well = rounded_rect(
+        Rectangle {
+            x: inset_x - 8.0,
+            y: BOARD_INSET_Y + (UNIT + GAP) - 8.0,
+            width: 15.0 * (UNIT + GAP) + 4.0,
+            height: 5.0 * (UNIT + GAP) + 4.0,
+        },
+        9.0,
     );
-    frame.fill(&pcb_red, rgb(0x80, 0x1E, 0x1C));
+    frame.fill(&alpha_well, rgb(0x16, 0x13, 0x20));
+
+    for rect in [
+        Rectangle {
+            x: inset_x + NAV_COL * (UNIT + GAP) - 8.0,
+            y: BOARD_INSET_Y + (UNIT + GAP) - 8.0,
+            width: 3.0 * (UNIT + GAP) + 12.0,
+            height: 2.0 * (UNIT + GAP) + 12.0,
+        },
+        Rectangle {
+            x: inset_x + NAV_COL * (UNIT + GAP) - 8.0,
+            y: BOARD_INSET_Y + 4.0 * (UNIT + GAP) - 8.0,
+            width: 3.0 * (UNIT + GAP) + 12.0,
+            height: 2.0 * (UNIT + GAP) + 12.0,
+        },
+        Rectangle {
+            x: inset_x + NUMPAD_COL * (UNIT + GAP) - 8.0,
+            y: BOARD_INSET_Y + NUMPAD_Y_OFFSET - 8.0,
+            width: 4.0 * (UNIT + GAP) + 12.0,
+            height: 5.0 * (UNIT + GAP) + 12.0,
+        },
+    ] {
+        let well = rounded_rect(rect, 8.0);
+        frame.fill(&well, rgb(0x16, 0x13, 0x20));
+        frame.stroke(
+            &well,
+            canvas::Stroke::default().with_color(rgb(0x63, 0x3D, 0x60)).with_width(1.0),
+        );
+    }
+
+    // Encoder banks, status display and identity plate mirror the top deck of
+    // the physical board without inventing additional interactive controls.
+    for start in [0.0f32, 4.0] {
+        let tray = rounded_rect(
+            Rectangle {
+                x: inset_x + start * (UNIT + GAP) - 6.0,
+                y: BOARD_INSET_Y - 6.0,
+                width: 4.0 * (UNIT + GAP) + 8.0,
+                height: UNIT + 12.0,
+            },
+            7.0,
+        );
+        frame.fill(&tray, rgb(0x10, 0x0F, 0x19));
+        frame.stroke(
+            &tray,
+            canvas::Stroke::default().with_color(rgb(0x7B, 0x43, 0x68)).with_width(1.0),
+        );
+    }
+
+    frame.fill_text(Text {
+        content: "K2  /  MIDI PERFORMANCE KEYBOARD".to_string(),
+        position: Point::new(inset_x + 8.45 * (UNIT + GAP), BOARD_INSET_Y + 12.0),
+        color: rgb(0xF0, 0xC9, 0x9A),
+        size: iced::Pixels(12.0),
+        ..Text::default()
+    });
+    let display_bezel = rounded_rect(
+        Rectangle {
+            x: inset_x + 12.35 * (UNIT + GAP),
+            y: BOARD_INSET_Y + 4.0,
+            width: 2.55 * (UNIT + GAP),
+            height: 36.0,
+        },
+        5.0,
+    );
+    frame.fill(&display_bezel, rgb(0x14, 0x11, 0x1B));
+    let display = rounded_rect(
+        Rectangle {
+            x: inset_x + 12.55 * (UNIT + GAP),
+            y: BOARD_INSET_Y + 11.0,
+            width: 2.15 * (UNIT + GAP),
+            height: 21.0,
+        },
+        3.0,
+    );
+    frame.fill(&display, rgb(0x28, 0x17, 0x18));
+    frame.fill_text(Text {
+        content: "MIDI READY".to_string(),
+        position: Point::new(inset_x + 13.63 * (UNIT + GAP), BOARD_INSET_Y + 21.5),
+        color: rgb(0xFF, 0xB5, 0x58),
+        size: iced::Pixels(9.0),
+        horizontal_alignment: Horizontal::Center,
+        vertical_alignment: Vertical::Center,
+        ..Text::default()
+    });
+
+    let status_panel = Rectangle {
+        x: inset_x + NUMPAD_COL * (UNIT + GAP) - 8.0,
+        y: BOARD_INSET_Y - 8.0,
+        width: 4.0 * (UNIT + GAP) + 12.0,
+        height: UNIT,
+    };
+    let status_path = rounded_rect(status_panel, 8.0);
+    frame.fill(&status_path, rgb(0x16, 0x13, 0x20));
+    frame.stroke(
+        &status_path,
+        canvas::Stroke::default().with_color(rgb(0x63, 0x3D, 0x60)).with_width(1.0),
+    );
+
+    let segment_width = (status_panel.width - 12.0) / 3.0;
+    for (i, label) in ["NUM", "CAPS", "SCROLL"].iter().enumerate() {
+        let segment = Rectangle {
+            x: status_panel.x + 6.0 + i as f32 * segment_width,
+            y: status_panel.y + 6.0,
+            width: segment_width,
+            height: status_panel.height - 12.0,
+        };
+        let segment_path = rounded_rect(segment, 4.0);
+        frame.fill(&segment_path, rgb(0x2C, 0x22, 0x35));
+        frame.stroke(
+            &segment_path,
+            canvas::Stroke::default().with_color(rgb(0x72, 0x45, 0x6D)).with_width(0.75),
+        );
+
+        let x = segment.x + segment.width / 2.0;
+        frame.fill(
+            &Path::circle(Point::new(x, segment.y + 10.0), 3.0),
+            if i == 0 { rgb(0x50, 0xD4, 0xC8) } else { rgb(0xF0, 0x68, 0x68) },
+        );
+        frame.fill_text(Text {
+            content: (*label).to_string(),
+            position: Point::new(x, segment.y + 25.0),
+            color: rgb(0xC3, 0x9F, 0xB6),
+            size: iced::Pixels(8.0),
+            horizontal_alignment: Horizontal::Center,
+            ..Text::default()
+        });
+    }
 
     for key in keys {
-        let rect = key_rect(key);
-        let lit_track = highlighted.get(&key.id).copied();
+        let rect = key_rect_with_inset(key, inset_x);
+        let lit_track = highlighted.get(&key.id).copied()
+            .or_else(|| {
+                (Some(key.id) == selected_control || pressed.contains(&key.id))
+                    .then_some(usize::MAX)
+            });
 
         if key.is_knob {
             draw_knob(frame, rect);
@@ -171,10 +374,22 @@ fn draw_board(frame: &mut Frame, keys: &[Key], highlighted: &HashMap<KeyId, usiz
         }
 
         let (fill, text_color, glow_color) = key_colors(key.cluster, lit_track);
-        let radius = 8.0;
+        let radius = 7.0;
+
+        let key_shadow = rounded_rect(
+            Rectangle { x: rect.x, y: rect.y + 4.0, ..rect },
+            radius,
+        );
+        frame.fill(&key_shadow, Color::from_rgba8(0x05, 0x04, 0x0A, 0.80));
 
         let path = rounded_rect(rect, radius);
         frame.fill(&path, fill);
+        frame.stroke(
+            &path,
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.32))
+                .with_width(1.0),
+        );
 
         if lit_track.is_some() {
             let glow = rounded_rect(
@@ -238,11 +453,20 @@ fn draw_knob(frame: &mut Frame, rect: Rectangle) {
     let center = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
     let radius = rect.width.min(rect.height) / 2.0 - 4.0;
 
+    frame.fill(
+        &Path::circle(Point::new(center.x, center.y + 3.0), radius + 1.0),
+        Color::from_rgba8(0, 0, 0, 0.45),
+    );
+
     let base = Path::circle(center, radius);
-    frame.fill(&base, rgb(0xC4, 0xC8, 0xCB));
+    frame.fill(&base, rgb(0x13, 0x12, 0x1C));
+    frame.stroke(
+        &base,
+        canvas::Stroke::default().with_color(rgb(0x6F, 0x3D, 0x61)).with_width(1.0),
+    );
 
     let knurl = Path::circle(center, radius * 0.55);
-    frame.fill(&knurl, rgb(0x8A, 0x8E, 0x91));
+    frame.fill(&knurl, rgb(0x24, 0x1E, 0x2D));
 
     let notch = Path::new(|b| {
         b.move_to(Point::new(center.x, center.y - radius * 0.8));
@@ -250,5 +474,17 @@ fn draw_knob(frame: &mut Frame, rect: Rectangle) {
         b.line_to(Point::new(center.x + 3.0, center.y - radius * 0.4));
         b.close();
     });
-    frame.fill(&notch, rgb(0x3A, 0x3D, 0x3F));
+    frame.fill(&notch, rgb(0xFF, 0x76, 0x7B));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_side_padding_collapses_on_narrow_canvases() {
+        assert_eq!(board_inset_x(1484.0), 77.0);
+        assert_eq!(board_inset_x(1400.0), 35.0);
+        assert_eq!(board_inset_x(1200.0), MIN_BOARD_INSET_X);
+    }
 }
