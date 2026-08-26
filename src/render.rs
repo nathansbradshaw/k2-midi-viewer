@@ -5,7 +5,7 @@ use iced::widget::canvas::{self, Frame, Geometry, Path, Text};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 use crate::key::{Cluster, Key, KeyId};
-use crate::layout::{KNOB_COL_STEP, NAV_COL, NUMPAD_COL};
+use crate::layout::{KNOB_COL_STEP, KNOB_GROUP_START_COL, NAV_COL, NUMPAD_COL};
 use crate::Message;
 
 /// Per-track highlight palette — cycled for files with more than 8 tracks.
@@ -362,11 +362,12 @@ fn draw_board(
 
     // Encoder banks, status display and identity plate mirror the top deck of
     // the physical board. The 12 knobs are grouped into 3 trays of 4, packed
-    // at KNOB_COL_STEP pitch so the whole row still fits the footprint the
+    // at KNOB_COL_STEP pitch starting after the standalone Bitcrush encoder
+    // (KNOB_GROUP_START_COL), so the whole row still fits the footprint the
     // original 8 full-width knobs occupied.
     let tray_width = 4.0 * KNOB_COL_STEP;
     for group in 0..3 {
-        let start = group as f32 * tray_width;
+        let start = KNOB_GROUP_START_COL + group as f32 * tray_width;
         let tray = rounded_rect(
             Rectangle {
                 x: inset_x + start * (UNIT + GAP) - 6.0,

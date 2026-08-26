@@ -63,10 +63,11 @@ pub struct KnobParam {
     pub default: f32,
 }
 
-pub const KNOB_COUNT: usize = 12;
+pub const KNOB_COUNT: usize = 13;
 
-/// Ordered to match the three 4-knob trays on the board: tone shaping,
-/// envelope + mix, then modulation.
+/// Ordered to match the three 4-knob trays on the board (tone shaping,
+/// envelope + mix, then modulation), plus the standalone encoder to their
+/// left (`Bitcrush`).
 pub const KNOB_PARAMS: [KnobParam; KNOB_COUNT] = [
     KnobParam { label: "Volume",   min: 0.0,   max: 1.5,   default: 1.0 },
     KnobParam { label: "Cutoff",   min: 0.05,  max: 1.0,   default: 0.30 },
@@ -80,6 +81,7 @@ pub const KNOB_PARAMS: [KnobParam; KNOB_COUNT] = [
     KnobParam { label: "Vib Depth",min: 0.0,   max: 50.0,  default: 0.0 },
     KnobParam { label: "Tremolo",  min: 0.0,   max: 1.0,   default: 0.0 },
     KnobParam { label: "Glide",    min: 0.0,   max: 0.5,   default: 0.0 },
+    KnobParam { label: "Bitcrush", min: 0.0,   max: 1.0,   default: 0.0 },
 ];
 
 fn midi_to_hz(note: u8) -> f32 {
@@ -128,6 +130,13 @@ pub struct SoftSynth {
     tremolo_depth: f32,
     glide_s:       f32,
     lfo_phase:     f32,
+    /// 0.0 (off) .. 1.0 (max) — drives both quantization depth and the
+    /// sample-and-hold decimation rate in `render`'s final bitcrush stage.
+    bitcrush:      f32,
+    crush_phase:   u32,
+    /// Last held output frame for the sample-and-hold decimator, one slot
+    /// per channel.
+    crush_hold:    Vec<f32>,
 }
 
 impl SoftSynth {
@@ -151,6 +160,9 @@ impl SoftSynth {
             tremolo_depth: KNOB_PARAMS[10].default,
             glide_s:       KNOB_PARAMS[11].default,
             lfo_phase: 0.0,
+            bitcrush:    KNOB_PARAMS[12].default,
+            crush_phase: 0,
+            crush_hold:  vec![0.0; channels.max(1)],
         }
     }
 
@@ -179,6 +191,7 @@ impl SoftSynth {
             9 => self.vibrato_depth = value,
             10 => self.tremolo_depth = value,
             11 => self.glide_s = value,
+            12 => self.bitcrush = value,
             _ => {}
         }
     }
@@ -345,6 +358,25 @@ impl SoftSynth {
 
         // Master volume, then soft clip to prevent digital distortion
         for s in data.iter_mut() { *s = (*s * self.master_volume).clamp(-1.0, 1.0); }
+
+        // Bitcrush: lo-fi degradation on the finished mix — quantizes to a
+        // reduced bit depth and decimates via sample-and-hold, both scaled
+        // by the one knob so it goes from transparent to fully crushed.
+        if self.bitcrush > 0.001 {
+            let levels = 2f32.powf(16.0 - self.bitcrush * 13.0);
+            let hold_len = 1 + (self.bitcrush * 24.0) as u32;
+            for frame in data.chunks_exact_mut(ch) {
+                if self.crush_phase == 0 {
+                    for (hold, samp) in self.crush_hold.iter_mut().zip(frame.iter()) {
+                        *hold = (samp * levels).round() / levels;
+                    }
+                }
+                for (samp, &hold) in frame.iter_mut().zip(self.crush_hold.iter()) {
+                    *samp = hold;
+                }
+                self.crush_phase = (self.crush_phase + 1) % hold_len;
+            }
+        }
 
         self.voices.retain(|v| v.stage != Stage::Done);
     }

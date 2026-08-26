@@ -569,6 +569,7 @@ mod tests {
                 Arc::new(AtomicBool::new(false)),
                 vec![false],
                 vec![0],
+                vec![0i8],
                 None,
                 None,
                 Arc::new(HashSet::from([60])),

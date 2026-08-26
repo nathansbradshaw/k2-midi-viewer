@@ -6,15 +6,26 @@ use std::collections::{HashMap, HashSet};
 pub const NAV_COL: f32 = 15.5;
 pub const NUMPAD_COL: f32 = 19.0;
 
-/// Column pitch, width and height for the 12 encoder knobs. Sized to fill
-/// most of the alpha block's width (cols 0..~14.6), matching the real
-/// board's photo reference, while still landing just short of NAV_COL —
+/// Column pitch and size for the 12 grouped parameter knobs, and the column
+/// they start at. Packed tighter than a plain 0..~14.6 spread (the original,
+/// encoder-less layout) so that span, starting after `ENCODER_COL` and its
+/// standalone gap, still ends at the same ~14.6 — just short of NAV_COL,
 /// which is calibrated to the alpha block's real PCB spacing (see
-/// `right_hand_sections_share_alignment_and_spacing`) and must not move.
-/// Height is less than a full row so a label can sit under each knob.
-pub const KNOB_COL_STEP: f32 = 1.25;
+/// `right_hand_sections_share_alignment_and_spacing`) and must not move —
+/// and short of the alpha block's own right edge (col 15.0), matching the
+/// real board's photo reference where the knob group never overhangs the
+/// keys below it. Height is less than a full row so a label can sit under
+/// each knob.
+pub const KNOB_COL_STEP: f32 = 1.14;
 pub const KNOB_WIDTH: f32 = 0.85;
 pub const KNOB_HEIGHT: f32 = 0.75;
+pub const KNOB_GROUP_START_COL: f32 = 1.2;
+
+/// Column for the single standalone encoder the real board has to the left
+/// of the 12-knob group (its own separate control, not part of any tray) —
+/// aligned with the alpha block's leftmost key (col 0) rather than sitting
+/// further left in the board's margin, matching the photo reference.
+pub const ENCODER_COL: f32 = 0.0;
 
 pub struct Layout {
     pub keys: Vec<Key>,
@@ -79,13 +90,32 @@ pub fn build_layout() -> Layout {
     let mut keys: Vec<Key> = Vec::new();
 
     // --- Encoders ---
-    for i in 0..crate::synth::KNOB_COUNT {
+    // The standalone slot to the left of the group shows Volume — swapped
+    // with Bitcrush (originally there), since Volume is reached for far more
+    // often and better suits the isolated, easy-to-find position.
+    let grouped_knob_count = crate::synth::KNOB_COUNT - 1;
+    let bitcrush_index = grouped_knob_count as u8; // KNOB_PARAMS[12]
+    for i in 0..grouped_knob_count {
+        // Slot 0 (first grouped knob) takes Bitcrush's place; Volume (index
+        // 0) moves out to the standalone encoder below instead.
+        let knob_index = if i == 0 { bitcrush_index } else { i as u8 };
         keys.push(
-            Key::new(next_id(), "", i as f32 * KNOB_COL_STEP, 0.0, Cluster::Encoder)
-                .size(KNOB_WIDTH, KNOB_HEIGHT)
-                .knob(i as u8),
+            Key::new(
+                next_id(),
+                "",
+                KNOB_GROUP_START_COL + i as f32 * KNOB_COL_STEP,
+                0.0,
+                Cluster::Encoder,
+            )
+            .size(KNOB_WIDTH, KNOB_HEIGHT)
+            .knob(knob_index),
         );
     }
+    keys.push(
+        Key::new(next_id(), "", ENCODER_COL, 0.0, Cluster::Encoder)
+            .size(KNOB_WIDTH, KNOB_HEIGHT)
+            .knob(0),
+    );
 
     // --- Alpha block ---
     // Rows 1,3,5: first key 1.5u at col 0, remaining at col 0.5+c (c=1..)
