@@ -146,6 +146,26 @@ fn channel_options(prefix: &'static str) -> Vec<ChannelOption> {
     (1..=16u8).map(|channel| ChannelOption { prefix, channel }).collect()
 }
 
+/// A per-track octave shift for display in a [`pick_list`] dropdown, mirroring
+/// [`ChannelOption`]. Octave-only (not semitones) — layered on top of the
+/// whole-song pitch/octave controls for a track that needs its own register.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TrackOctaveOption(i8);
+
+impl std::fmt::Display for TrackOctaveOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            write!(f, "OCT ±0")
+        } else {
+            write!(f, "OCT {:+}", self.0)
+        }
+    }
+}
+
+fn track_octave_options() -> Vec<TrackOctaveOption> {
+    (-3..=3i8).map(TrackOctaveOption).collect()
+}
+
 fn channel_pick_list_style(_: &Theme, status: pick_list::Status) -> pick_list::Style {
     let (background, border_color) = match status {
         pick_list::Status::Active => (
@@ -195,6 +215,29 @@ fn accent_style(_: &Theme, status: button::Status) -> button::Style {
             offset: Vector::new(0.0, 2.0),
             blur_radius: 6.0,
         },
+        snap: false,
+    }
+}
+
+/// Styles an "on/active" indicator (a connected port, an enabled toggle) —
+/// visually distinct from [`accent_style`] so those states don't compete
+/// with the actual primary-action buttons (Play, Open MIDI) for attention.
+fn toggled_style(_: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered => Color::from_rgb(0.30, 0.20, 0.20),
+        button::Status::Pressed => Color::from_rgb(0.14, 0.11, 0.10),
+        button::Status::Disabled => Color::from_rgb(0.16, 0.12, 0.14),
+        button::Status::Active => Color::from_rgb(0.20, 0.15, 0.15),
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: ACCENT,
+        border: Border {
+            color: ACCENT,
+            width: 1.0,
+            radius: 7.0.into(),
+        },
+        shadow: Shadow::default(),
         snap: false,
     }
 }
@@ -378,6 +421,11 @@ struct App {
     keyboard_notes: std::collections::HashSet<u8>,
     keyboard_notes_sorted: Vec<u8>, // ascending, for nearest-key search
     highlighted: HashMap<KeyId, usize>, // KeyId → track index
+    /// The exact key each currently-sounding (note, channel) pair lit up, so
+    /// its matching note-off can clear precisely that key even though a
+    /// per-track octave shift means the same raw note can map to different
+    /// keys depending on which track played it.
+    active_highlight_keys: HashMap<(u8, u8), KeyId>,
     /// Nav-cluster waveform-select keys currently toggled on; each one is a
     /// layer summed together in the synth (empty ⇒ Organ). See
     /// `active_waveforms`.
@@ -420,6 +468,10 @@ struct App {
     /// track — e.g. to route a specific voice to a specific channel on the
     /// connected hardware.
     track_channel: Vec<u8>,
+    /// Per-track octave shift (in octaves, not semitones), layered on top of
+    /// `octave_offset` — for a track that needs a different register than the
+    /// rest of the song to land on the keyboard.
+    track_octave: Vec<i8>,
     load_error: Option<String>,
 
     // playback
@@ -501,6 +553,7 @@ impl Default for App {
             drum_note_to_key: layout.drum_note_to_key,
             key_pos,
             highlighted: HashMap::new(),
+            active_highlight_keys: HashMap::new(),
             waveform_keys: HashSet::new(),
             pressed_keys: HashSet::new(),
             keyboard_hits_enabled: false,
@@ -528,6 +581,7 @@ impl Default for App {
             skipped_notes: 0,
             track_muted: Vec::new(),
             track_channel: Vec::new(),
+            track_octave: Vec::new(),
             load_error: None,
 
             playback_handle: None,
@@ -609,6 +663,7 @@ pub enum Message {
     // tracks
     TrackMuted(usize, bool),
     TrackChannel(usize, u8),
+    TrackOctave(usize, i8),
     // channel
     LiveChannel(u8),
     // transport
@@ -1289,6 +1344,14 @@ impl App {
     /// loses all context the moment a note's highlight clears — exactly what
     /// happens between two non-overlapping notes — and that's what was
     /// producing the wrong jumps.
+    /// The pitch a note lands on once both the whole-song octave offset and
+    /// its track's own octave shift are applied — this is what decides which
+    /// physical key lights up, or whether it fits the keyboard at all.
+    fn shifted_note(&self, midi_note: u8, track: usize) -> u8 {
+        let shift = midi::combined_octave_shift(self.octave_offset, &self.track_octave, track);
+        (midi_note as i16 + shift).clamp(0, 127) as u8
+    }
+
     fn rebuild_closest_key_map(&mut self) {
         self.closest_key_for_note.clear();
         if self.key_pick_mode != KeyPickMode::Closest {
@@ -1305,7 +1368,7 @@ impl App {
             if note.channel == synth::DRUM_CHANNEL {
                 continue;
             }
-            let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+            let shifted = self.shifted_note(note.midi_note, note.track);
             if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                 shifted_notes.push(shifted);
                 stages.push(kids.clone());
@@ -1341,7 +1404,7 @@ impl App {
                 }
 
                 let shifted =
-                    (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+                    self.shifted_note(note.midi_note, note.track);
                 if let Some(&kid) = self.closest_key_for_note.get(&shifted) {
                     self.all_notes_cache.insert(kid, note.track);
                 }
@@ -1362,7 +1425,7 @@ impl App {
                 }
 
                 let shifted =
-                    (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+                    self.shifted_note(note.midi_note, note.track);
                 if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                     if let Some(kid) = pick_key_fixed(kids, self.key_pick_mode) {
                         self.all_notes_cache.insert(kid, note.track);
@@ -1380,7 +1443,7 @@ impl App {
             if note.channel == synth::DRUM_CHANNEL {
                 continue;
             }
-            let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+            let shifted = self.shifted_note(note.midi_note, note.track);
             if self.note_to_all_keys.contains_key(&shifted) {
                 continue;
             }
@@ -1431,7 +1494,7 @@ impl App {
                 }
 
                 let shifted =
-                    (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+                    self.shifted_note(note.midi_note, note.track);
                 if let Some(&kid) = self.closest_key_for_note.get(&shifted) {
                     self.selection_highlight_cache.insert(kid, note.track);
                     play_ticks.entry(kid).or_default().push(note.start_tick);
@@ -1455,7 +1518,7 @@ impl App {
                 }
 
                 let shifted =
-                    (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+                    self.shifted_note(note.midi_note, note.track);
                 if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                     if let Some(kid) = pick_key_fixed(kids, self.key_pick_mode) {
                         self.selection_highlight_cache.insert(kid, note.track);
@@ -1477,7 +1540,7 @@ impl App {
             if note.channel == synth::DRUM_CHANNEL {
                 continue;
             }
-            let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+            let shifted = self.shifted_note(note.midi_note, note.track);
             if self.note_to_all_keys.contains_key(&shifted) {
                 continue;
             }
@@ -1808,10 +1871,12 @@ impl App {
                 self.octave_offset = offset;
                 self.track_muted = vec![false; file.tracks.len()];
                 self.track_channel = file.tracks.iter().map(|t| t.channel.unwrap_or(0)).collect();
+                self.track_octave = vec![0i8; file.tracks.len()];
                 self.load_error = None;
                 self.play_state = PlayState::Stopped;
                 self.position_tick = 0;
                 self.highlighted.clear();
+                self.active_highlight_keys.clear();
                 self.staff_selection = None;
                 self.selection_highlight_cache.clear();
                 self.selection_play_order.clear();
@@ -1830,6 +1895,7 @@ impl App {
                     Arc::clone(&self.audio_enabled),
                     self.track_muted.clone(),
                     self.track_channel.clone(),
+                    self.track_octave.clone(),
                     conn,
                     Arc::new(self.keyboard_notes.clone()),
                     self.octave_offset,
@@ -1898,6 +1964,7 @@ impl App {
             Message::OctaveLayoutToggle => {
                 self.key_pick_mode = self.key_pick_mode.next();
                 self.highlighted.clear();
+                self.active_highlight_keys.clear();
                 self.rebuild_closest_key_map();
                 if self.show_all_notes {
                     self.rebuild_all_notes_cache();
@@ -1914,6 +1981,7 @@ impl App {
                     self.rebuild_all_notes_cache();
                 } else {
                     self.highlighted.clear();
+                    self.active_highlight_keys.clear();
                 }
                 Task::none()
             }
@@ -1944,6 +2012,22 @@ impl App {
                 }
                 Task::none()
             }
+            Message::TrackOctave(idx, octaves) => {
+                if let Some(s) = self.track_octave.get_mut(idx) {
+                    *s = octaves;
+                }
+                if let Some(ref h) = self.playback_handle {
+                    h.cmd_tx.send(PlayCmd::SetTrackOctave(idx, octaves)).ok();
+                }
+                self.rebuild_closest_key_map();
+                if self.show_all_notes {
+                    self.rebuild_all_notes_cache();
+                }
+                if self.staff_selection.is_some() {
+                    self.rebuild_selection_highlight();
+                }
+                Task::none()
+            }
 
             // ── Transport ──────────────────────────────────────────────────
             Message::Play => {
@@ -1967,6 +2051,7 @@ impl App {
                 self.play_state = PlayState::Stopped;
                 self.position_tick = 0;
                 self.highlighted.clear();
+                self.active_highlight_keys.clear();
                 Task::none()
             }
             Message::ToggleLooper => {
@@ -1981,6 +2066,7 @@ impl App {
                     // Discard notes and position reports from the old timeline
                     // before asking the playback clock to re-anchor.
                     self.highlighted.clear();
+                    self.active_highlight_keys.clear();
                     self.playback_events.lock().unwrap().clear();
                     if let Some(ref h) = self.playback_handle {
                         h.cmd_tx.send(PlayCmd::SeekTo(tick)).ok();
@@ -2011,8 +2097,7 @@ impl App {
                                     }
                                     continue;
                                 }
-                                let shifted =
-                                    (note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+                                let shifted = self.shifted_note(note, track);
                                 // Closest mode reads the whole-file precomputed answer
                                 // (rebuild_closest_key_map) so live playback always agrees
                                 // with the selection/all-notes views instead of re-deciding
@@ -2026,6 +2111,12 @@ impl App {
                                 };
                                 if let Some(kid) = kid {
                                     self.highlighted.insert(kid, track);
+                                    // A per-track octave shift means the same raw
+                                    // (note, channel) can map to a different key
+                                    // depending on which track it came from, so the
+                                    // matching note-off can't safely recompute the
+                                    // shift itself — remember exactly what lit here.
+                                    self.active_highlight_keys.insert((note, channel), kid);
                                 }
                             }
                         }
@@ -2037,12 +2128,8 @@ impl App {
                                     }
                                     continue;
                                 }
-                                let shifted =
-                                    (note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
-                                if let Some(kids) = self.note_to_all_keys.get(&shifted) {
-                                    for &kid in kids {
-                                        self.highlighted.remove(&kid);
-                                    }
+                                if let Some(kid) = self.active_highlight_keys.remove(&(note, channel)) {
+                                    self.highlighted.remove(&kid);
                                 }
                             }
                         }
@@ -2052,6 +2139,7 @@ impl App {
                         PlayEvent::Done => {
                             self.position_tick = 0;
                             self.highlighted.clear();
+                            self.active_highlight_keys.clear();
                             let can_loop = self.looper_enabled
                                 && self
                                     .midi_file
@@ -2348,7 +2436,7 @@ impl App {
         let all_notes_btn = button(all_notes_label)
             .padding([5, 10])
             .style(if self.show_all_notes {
-                accent_style
+                toggled_style
             } else {
                 control_style
             })
@@ -2417,7 +2505,7 @@ impl App {
             let input = button(text(format!("MIDI IN · {input_name}")).size(11))
                 .padding([7, 10])
                 .style(if self.web_midi_input_id.is_some() {
-                    accent_style
+                    toggled_style
                 } else {
                     control_style
                 })
@@ -2428,7 +2516,7 @@ impl App {
             let output = button(text(format!("MIDI OUT · {output_name}")).size(11))
                 .padding([7, 10])
                 .style(if self.web_midi_output_id.is_some() {
-                    accent_style
+                    toggled_style
                 } else {
                     control_style
                 })
@@ -2466,10 +2554,41 @@ impl App {
         let header_top = row![identity, web_midi_controls, live_channel_btn, open_btn]
             .spacing(row_gap)
             .align_y(Alignment::Center);
+
+        let keyboard_hits_label = if self.keyboard_hits_enabled {
+            "Computer keys: on"
+        } else {
+            "Computer keys: off"
+        };
+        let keyboard_hits_btn = button(keyboard_hits_label)
+            .padding([8, 12])
+            .style(if self.keyboard_hits_enabled {
+                toggled_style
+            } else {
+                control_style
+            })
+            .on_press(Message::ToggleKeyboardHits);
+
+        let drum_symbols_label = if self.drum_symbols_enabled {
+            "Drum symbols: on"
+        } else {
+            "Drum symbols: off"
+        };
+        let drum_symbols_btn = button(drum_symbols_label)
+            .padding([8, 12])
+            .style(if self.drum_symbols_enabled {
+                toggled_style
+            } else {
+                control_style
+            })
+            .on_press(Message::ToggleDrumSymbols);
+
         let header_bottom = row![
             container(meta).width(Length::Fill),
             pitch_controls,
             all_notes_btn,
+            keyboard_hits_btn,
+            drum_symbols_btn,
         ]
         .spacing(row_gap)
         .align_y(Alignment::Center);
@@ -2505,7 +2624,7 @@ impl App {
         let looper_btn = button(looper_label)
             .padding([8, 12])
             .style(if self.looper_enabled {
-                accent_style
+                toggled_style
             } else {
                 control_style
             })
@@ -2543,34 +2662,6 @@ impl App {
             .padding([8, 12])
             .style(control_style)
             .on_press_maybe(audio_available.then_some(Message::ToggleAudio));
-
-        let keyboard_hits_label = if self.keyboard_hits_enabled {
-            "Computer keys: on"
-        } else {
-            "Computer keys: off"
-        };
-        let keyboard_hits_btn = button(keyboard_hits_label)
-            .padding([8, 12])
-            .style(if self.keyboard_hits_enabled {
-                accent_style
-            } else {
-                control_style
-            })
-            .on_press(Message::ToggleKeyboardHits);
-
-        let drum_symbols_label = if self.drum_symbols_enabled {
-            "Drum symbols: on"
-        } else {
-            "Drum symbols: off"
-        };
-        let drum_symbols_btn = button(drum_symbols_label)
-            .padding([8, 12])
-            .style(if self.drum_symbols_enabled {
-                accent_style
-            } else {
-                control_style
-            })
-            .on_press(Message::ToggleDrumSymbols);
 
         // Arrow Up/Down transpose hand-played notes; only worth showing once
         // it's actually been nudged off center.
@@ -2617,8 +2708,6 @@ impl App {
                 stop_btn,
                 looper_btn,
                 audio_btn,
-                keyboard_hits_btn,
-                drum_symbols_btn,
                 live_octave_label,
                 scrubber,
                 text(time_str).size(13).color(TEXT_MUTED),
@@ -2630,7 +2719,13 @@ impl App {
         .style(panel_style);
 
         // ── Row 3: track mutes ─────────────────────────────────────────────
-        let track_row: Element<Message> = if let Some(ref f) = self.midi_file {
+        // Only worth showing once there's more than one track to mute/route —
+        // for single-track files (or no file yet) it's just an empty panel.
+        let track_row: Option<Element<Message>> = self
+            .midi_file
+            .as_ref()
+            .filter(|f| f.tracks.len() > 1)
+            .map(|f| {
             let items: Vec<Element<Message>> =
                 f.tracks
                     .iter()
@@ -2659,12 +2754,22 @@ impl App {
                         .text_size(11)
                         .padding([3, 6])
                         .style(channel_pick_list_style);
+                        let octave = self.track_octave.get(i).copied().unwrap_or(0);
+                        let octave_picker = pick_list(
+                            track_octave_options(),
+                            Some(TrackOctaveOption(octave)),
+                            move |opt: TrackOctaveOption| Message::TrackOctave(i, opt.0),
+                        )
+                        .text_size(11)
+                        .padding([3, 6])
+                        .style(channel_pick_list_style);
                         row![
                             swatch,
                             checkbox(muted)
                                 .label(label)
                                 .on_toggle(move |v| Message::TrackMuted(i, v)),
                             channel_picker,
+                            octave_picker,
                         ]
                         .spacing(4)
                         .align_y(Alignment::Center)
@@ -2680,24 +2785,13 @@ impl App {
                     .spacing(row_gap)
                     .align_y(Alignment::Center),
             )
-            .padding([panel_v, panel_h])
+            // A bit taller than the other panels — with both a channel and an
+            // octave picker per track now, the row reads as cramped at the
+            // same vertical padding used for single-line panels.
+            .padding([panel_v + 4.0, panel_h])
             .style(panel_style)
             .into()
-        } else {
-            container(
-                row![
-                    text("TRACKS").size(10).color(TEXT_MUTED),
-                    text("Track controls appear after loading a MIDI file")
-                        .size(12)
-                        .color(TEXT_MUTED),
-                ]
-                .spacing(row_gap)
-                .align_y(Alignment::Center),
-            )
-            .padding([panel_v, panel_h])
-            .style(panel_style)
-            .into()
-        };
+        });
 
         // ── Keyboard canvas ────────────────────────────────────────────────
         // A staff selection takes priority: it shows exactly what's selected,
@@ -2741,6 +2835,7 @@ impl App {
                 position_tick: self.position_tick,
                 track_muted: &self.track_muted,
                 octave_offset: self.octave_offset,
+                track_octave: &self.track_octave,
                 selection: self.staff_selection,
                 keyboard_notes: &self.keyboard_notes,
                 drum_note_to_key: &self.drum_note_to_key,
@@ -2762,16 +2857,18 @@ impl App {
             row![].into()
         };
 
-        let content = column![
-            file_row,
-            transport_row,
-            track_row,
-            keyboard,
-            staff,
-            selection_row
-        ]
-        .spacing(section_gap)
-        .height(Length::Fill);
+        let mut content_children: Vec<Element<Message>> =
+            vec![file_row.into(), transport_row.into()];
+        if let Some(track_row) = track_row {
+            content_children.push(track_row);
+        }
+        content_children.push(keyboard.into());
+        content_children.push(staff);
+        content_children.push(selection_row);
+
+        let content = column(content_children)
+            .spacing(section_gap)
+            .height(Length::Fill);
 
         container(content)
             .padding(outer_pad)

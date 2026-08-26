@@ -20,6 +20,7 @@ pub enum PlayCmd {
     SetAudio(bool),
     SetTrackMuted(usize, bool),
     SetTrackChannel(usize, u8),
+    SetTrackOctave(usize, i8),
     /// (start_tick, end_tick) to repeat, or `None` to play through normally.
     SetLoopRange(Option<(u64, u64)>),
     SetOctaveOffset(i8),
@@ -47,6 +48,7 @@ pub fn spawn(
     audio_enabled: Arc<AtomicBool>,
     track_muted: Vec<bool>,
     track_channel: Vec<u8>,
+    track_octave: Vec<i8>,
     midi_conn: Option<midir::MidiOutputConnection>,
     keyboard_notes: Arc<HashSet<u8>>,
     octave_offset: i8,
@@ -67,8 +69,8 @@ pub fn spawn(
 
     std::thread::spawn(move || {
         run(
-            file, cmd_rx, events_out, audio_enabled, track_muted, track_channel, midi_conn, synth,
-            keyboard_notes, octave_offset,
+            file, cmd_rx, events_out, audio_enabled, track_muted, track_channel, track_octave,
+            midi_conn, synth, keyboard_notes, octave_offset,
         );
     });
 
@@ -184,6 +186,7 @@ fn run(
     audio_enabled: Arc<AtomicBool>,
     mut track_muted: Vec<bool>,
     mut track_channel: Vec<u8>,
+    mut track_octave: Vec<i8>,
     mut midi_conn: Option<midir::MidiOutputConnection>,
     synth: Option<Arc<Mutex<SoftSynth>>>,
     keyboard_notes: Arc<HashSet<u8>>,
@@ -197,9 +200,9 @@ fn run(
     // A note only actually sounds if it lands on a physical key once shifted.
     // GM percussion (channel 10) is exempt: those note numbers select a drum
     // sound rather than a pitch, so "does it fit on the keyboard" doesn't apply.
-    let fits_keyboard = |note: u8, channel: u8, octave_offset: i8| -> bool {
+    let fits_keyboard = |note: u8, channel: u8, shift: i16| -> bool {
         if channel == crate::synth::DRUM_CHANNEL { return true; }
-        let shifted = (note as i16 + octave_offset as i16).clamp(0, 127) as u8;
+        let shifted = (note as i16 + shift).clamp(0, 127) as u8;
         keyboard_notes.contains(&shifted)
     };
 
@@ -232,6 +235,9 @@ fn run(
                 }
                 Ok(PlayCmd::SetTrackChannel(i, c)) => {
                     if let Some(s) = track_channel.get_mut(i) { *s = c; }
+                }
+                Ok(PlayCmd::SetTrackOctave(i, o)) => {
+                    if let Some(s) = track_octave.get_mut(i) { *s = o; }
                 }
                 Ok(PlayCmd::SetLoopRange(r)) => { loop_range = r; }
                 Ok(PlayCmd::SetAudio(v)) => {
@@ -278,7 +284,8 @@ fn run(
                 if note.start_tick >= position_tick || note.end_tick <= position_tick { continue; }
                 if track_muted.get(note.track).copied().unwrap_or(false) { continue; }
 
-                if audio && fits_keyboard(note.midi_note, note.channel, octave_offset) {
+                let shift = crate::midi::combined_octave_shift(octave_offset, &track_octave, note.track);
+                if audio && fits_keyboard(note.midi_note, note.channel, shift) {
                     let out_ch = output_channel(note.track, note.channel, &track_channel);
                     if let Some(ref mut c) = midi_conn {
                         c.send(&[0x90 | (out_ch & 0x0F), note.midi_note, note.velocity]).ok();
@@ -365,6 +372,10 @@ fn run(
                     if let Some(s) = track_channel.get_mut(i) { *s = c; }
                     continue;
                 }
+                Ok(PlayCmd::SetTrackOctave(i, o)) => {
+                    if let Some(s) = track_octave.get_mut(i) { *s = o; }
+                    continue;
+                }
                 Ok(PlayCmd::SetLoopRange(r)) => {
                     loop_range = r;
                     continue;
@@ -437,9 +448,10 @@ fn run(
             let muted = track_muted.get(ev.track).copied().unwrap_or(false);
 
             if !muted {
+                let shift = crate::midi::combined_octave_shift(octave_offset, &track_octave, ev.track);
                 match ev.kind {
                     EventKind::NoteOn { note, velocity } => {
-                        if audio && fits_keyboard(note, ev.channel, octave_offset) {
+                        if audio && fits_keyboard(note, ev.channel, shift) {
                             let out_ch = output_channel(ev.track, ev.channel, &track_channel);
                             if let Some(ref mut c) = midi_conn {
                                 c.send(&[0x90 | (out_ch & 0x0F), note, velocity]).ok();
@@ -450,7 +462,7 @@ fn run(
                         events_out.lock().unwrap().push_back(PlayEvent::NoteOn(note, ev.track, ev.channel));
                     }
                     EventKind::NoteOff { note } => {
-                        if audio && fits_keyboard(note, ev.channel, octave_offset) {
+                        if audio && fits_keyboard(note, ev.channel, shift) {
                             let out_ch = output_channel(ev.track, ev.channel, &track_channel);
                             if let Some(ref mut c) = midi_conn {
                                 c.send(&[0x80 | (out_ch & 0x0F), note, 0]).ok();

@@ -24,6 +24,7 @@ pub enum PlayCmd {
     SetAudio(bool),
     SetTrackMuted(usize, bool),
     SetTrackChannel(usize, u8),
+    SetTrackOctave(usize, i8),
     SetLoopRange(Option<(u64, u64)>),
     SetOctaveOffset(i8),
     SetWaveforms(Vec<crate::synth::Waveform>),
@@ -259,6 +260,7 @@ pub fn spawn(
     audio_enabled: Arc<AtomicBool>,
     track_muted: Vec<bool>,
     track_channel: Vec<u8>,
+    track_octave: Vec<i8>,
     midi_conn: Option<MidiOutputConnection>,
     keyboard_notes: Arc<HashSet<u8>>,
     octave_offset: i8,
@@ -278,6 +280,7 @@ pub fn spawn(
         audio_enabled,
         track_muted,
         track_channel,
+        track_octave,
         loop_range: None,
         keyboard_notes,
         octave_offset,
@@ -303,6 +306,7 @@ struct WebPlayback {
     audio_enabled: Arc<AtomicBool>,
     track_muted: Vec<bool>,
     track_channel: Vec<u8>,
+    track_octave: Vec<i8>,
     /// (start_tick, end_tick) currently being repeated, or `None`.
     loop_range: Option<(u64, u64)>,
     keyboard_notes: Arc<HashSet<u8>>,
@@ -430,6 +434,11 @@ impl WebPlayback {
                         *value = channel;
                     }
                 }
+                PlayCmd::SetTrackOctave(index, octave) => {
+                    if let Some(value) = self.track_octave.get_mut(index) {
+                        *value = octave;
+                    }
+                }
                 PlayCmd::SetLoopRange(range) => self.loop_range = range,
                 PlayCmd::SetOctaveOffset(offset) => self.octave_offset = offset,
                 PlayCmd::SetWaveforms(waveforms) => {
@@ -499,7 +508,7 @@ impl WebPlayback {
             EventKind::NoteOn { note, velocity } => {
                 self.publish(PlayEvent::NoteOn(note, event.track, event.channel));
                 if self.audio_enabled.load(Ordering::Relaxed)
-                    && self.fits_keyboard(note, event.channel)
+                    && self.fits_keyboard(note, event.channel, event.track)
                 {
                     self.note_on(note, velocity, self.output_channel(event.track, event.channel));
                 }
@@ -535,7 +544,7 @@ impl WebPlayback {
         for note in held {
             self.publish(PlayEvent::NoteOn(note.midi_note, note.track, note.channel));
             if self.audio_enabled.load(Ordering::Relaxed)
-                && self.fits_keyboard(note.midi_note, note.channel)
+                && self.fits_keyboard(note.midi_note, note.channel, note.track)
             {
                 let out_ch = self.output_channel(note.track, note.channel);
                 self.note_on(note.midi_note, note.velocity, out_ch);
@@ -543,11 +552,12 @@ impl WebPlayback {
         }
     }
 
-    fn fits_keyboard(&self, note: u8, channel: u8) -> bool {
+    fn fits_keyboard(&self, note: u8, channel: u8, track: usize) -> bool {
         if channel == crate::synth::DRUM_CHANNEL {
             return true;
         }
-        let shifted = (note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+        let shift = crate::midi::combined_octave_shift(self.octave_offset, &self.track_octave, track);
+        let shifted = (note as i16 + shift).clamp(0, 127) as u8;
         self.keyboard_notes.contains(&shifted)
     }
 

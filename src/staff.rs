@@ -58,6 +58,7 @@ pub struct StaffCanvas<'a> {
     pub position_tick: u64,
     pub track_muted:   &'a [bool],
     pub octave_offset: i8,
+    pub track_octave:  &'a [i8],
     /// Currently selected (start_tick, end_tick) range, drawn as a highlight band.
     pub selection:     Option<(u64, u64)>,
     /// Raw firmware notes present on the melodic keyboard, for the out-of-range check.
@@ -143,7 +144,7 @@ impl<'a> canvas::Program<Message> for StaffCanvas<'a> {
             draw_staff(
                 frame, bounds.size(),
                 self.midi_file, self.position_tick,
-                self.track_muted, self.octave_offset,
+                self.track_muted, self.octave_offset, self.track_octave,
                 self.selection,
                 self.keyboard_notes, self.drum_note_to_key,
             );
@@ -197,11 +198,13 @@ fn note_fits(
     keyboard_notes: &HashSet<u8>,
     drum_note_to_key: &HashMap<u8, KeyId>,
     octave_offset: i8,
+    track_octave: &[i8],
 ) -> bool {
     if note.channel == DRUM_CHANNEL {
         drum_note_to_key.contains_key(&note.midi_note)
     } else {
-        let shifted = (note.midi_note as i16 + octave_offset as i16).clamp(0, 127) as u8;
+        let shift = crate::midi::combined_octave_shift(octave_offset, track_octave, note.track);
+        let shifted = (note.midi_note as i16 + shift).clamp(0, 127) as u8;
         keyboard_notes.contains(&shifted)
     }
 }
@@ -280,6 +283,7 @@ fn draw_staff(
     pos: u64,
     track_muted: &[bool],
     octave_offset: i8,
+    track_octave: &[i8],
     selection: Option<(u64, u64)>,
     keyboard_notes: &HashSet<u8>,
     drum_note_to_key: &HashMap<u8, KeyId>,
@@ -407,7 +411,8 @@ fn draw_staff(
         if note.start_tick > vis_end || note.end_tick < vis_start { continue; }
         if track_muted.get(note.track).copied().unwrap_or(false)  { continue; }
 
-        let shifted = (note.midi_note as i16 + octave_offset as i16).clamp(0, 127) as u8;
+        let shift = crate::midi::combined_octave_shift(octave_offset, track_octave, note.track);
+        let shifted = (note.midi_note as i16 + shift).clamp(0, 127) as u8;
         let slot = staff_slot(shifted);
         let x    = tick_x(note.start_tick);
         let y    = slot_y(slot);
@@ -417,7 +422,7 @@ fn draw_staff(
         let is_active = note.start_tick <= pos && pos < note.end_tick;
         let is_past   = note.end_tick   <= pos;
 
-        let fits = note_fits(note, keyboard_notes, drum_note_to_key, octave_offset);
+        let fits = note_fits(note, keyboard_notes, drum_note_to_key, octave_offset, track_octave);
         let note_col = track_note_color(note.track, is_active, is_past);
 
         // Duration bar — a thin semi-transparent strip showing note length

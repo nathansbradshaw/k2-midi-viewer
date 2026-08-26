@@ -201,6 +201,14 @@ fn pair_notes(events: &[TimedEvent], total_ticks: u64) -> Vec<Note> {
     notes
 }
 
+/// Combines the whole-song octave offset with a track's own octave shift
+/// (octave increments only) into a single semitone shift to apply to one of
+/// that track's notes. Shared by the keyboard highlighting, staff rendering,
+/// and both playback backends so all four agree on where a note lands.
+pub fn combined_octave_shift(octave_offset: i8, track_octave: &[i8], track: usize) -> i16 {
+    octave_offset as i16 + track_octave.get(track).copied().unwrap_or(0) as i16 * 12
+}
+
 // ---------------------------------------------------------------------------
 // Octave auto-scaling
 // ---------------------------------------------------------------------------
