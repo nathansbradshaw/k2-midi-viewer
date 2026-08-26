@@ -1567,18 +1567,23 @@ impl App {
         .width(Length::Fill)
         .height(390.0);
 
-        // ── Staff canvas ───────────────────────────────────────────────────
-        let staff = Canvas::new(StaffCanvas {
-            midi_file:     self.midi_file.as_ref(),
-            position_tick: self.position_tick,
-            track_muted:   &self.track_muted,
-            octave_offset: self.octave_offset,
-            selection:     self.staff_selection,
-            keyboard_notes:    &self.keyboard_notes,
-            drum_note_to_key:  &self.drum_note_to_key,
-        })
-        .width(Length::Fill)
-        .height(Length::Fill);
+        // ── Staff canvas (or, with nothing loaded, usage instructions) ──────
+        let staff: Element<Message> = if has_file {
+            Canvas::new(StaffCanvas {
+                midi_file:     self.midi_file.as_ref(),
+                position_tick: self.position_tick,
+                track_muted:   &self.track_muted,
+                octave_offset: self.octave_offset,
+                selection:     self.staff_selection,
+                keyboard_notes:    &self.keyboard_notes,
+                drum_note_to_key:  &self.drum_note_to_key,
+            })
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+        } else {
+            instructions_panel(panel_v, panel_h, row_gap)
+        };
 
         // ── Selection info ────────────────────────────────────────────────
         let selection_row: Element<Message> = if has_file {
@@ -1604,6 +1609,67 @@ impl App {
             })
             .into()
     }
+}
+
+/// Fills the staff area with usage instructions while no file is loaded —
+/// otherwise that space is just an empty "Load a MIDI file" placeholder.
+fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'static, Message> {
+    let heading = |t: &'static str| text(t).size(13).color(TEXT_MAIN);
+    let body = |t: &'static str| text(t).size(12).color(TEXT_MUTED);
+
+    let sections: [(&str, &str); 7] = [
+        (
+            "Getting started",
+            "Click \"Open MIDI\" to load a .mid file, then use Play / Pause / Stop or drag \
+             the scrubber to move through it.",
+        ),
+        (
+            "PITCH",
+            "− / + nudge the song by a semitone or octave (toggle which with the ST/OCT \
+             button); Reset returns to the automatic best-fit offset. The \"Rows\" button \
+             picks which key lights up when a note repeats across the keyboard's overlapping \
+             rows: L/R, U/D, or Closest (shortest total travel).",
+        ),
+        (
+            "All notes",
+            "Overlays every note in the file on the keyboard at once, instead of only \
+             whatever is currently playing.",
+        ),
+        (
+            "Tracks",
+            "Mute or unmute individual tracks once a file is loaded — each track's color \
+             matches its notes on the keyboard and staff.",
+        ),
+        (
+            "Computer keys",
+            "Toggles the ability to play the keyboard by typing on your physical computer \
+             keyboard.",
+        ),
+        (
+            "Sound / MIDI OUT",
+            "\"Sound on\" mutes the built-in synth; the MIDI OUT button (desktop only) \
+             cycles between connected MIDI output ports.",
+        ),
+        (
+            "Staff view",
+            "Once a file is loaded, this area shows scrolling staff notation — drag across \
+             it to inspect the notes in a time range.",
+        ),
+    ];
+
+    let mut col = column![text("How to use K2 MIDI Viewer").size(16).color(TEXT_MAIN)]
+        .spacing(row_gap * 1.5);
+
+    for (h, b) in sections {
+        col = col.push(column![heading(h), body(b)].spacing(2));
+    }
+
+    container(scrollable(col).width(Length::Fill))
+        .padding([panel_v, panel_h])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(panel_style)
+        .into()
 }
 
 #[cfg(test)]
