@@ -19,6 +19,9 @@ pub enum PlayCmd {
     SeekTo(u64),
     SetAudio(bool),
     SetTrackMuted(usize, bool),
+    SetTrackChannel(usize, u8),
+    /// (start_tick, end_tick) to repeat, or `None` to play through normally.
+    SetLoopRange(Option<(u64, u64)>),
     SetOctaveOffset(i8),
     SetWaveforms(Vec<crate::synth::Waveform>),
     SetKnob(u8, f32), // knob index, real engine value (see synth::KNOB_PARAMS)
@@ -43,6 +46,7 @@ pub fn spawn(
     events_out: Arc<Mutex<VecDeque<PlayEvent>>>,
     audio_enabled: Arc<AtomicBool>,
     track_muted: Vec<bool>,
+    track_channel: Vec<u8>,
     midi_conn: Option<midir::MidiOutputConnection>,
     keyboard_notes: Arc<HashSet<u8>>,
     octave_offset: i8,
@@ -63,7 +67,7 @@ pub fn spawn(
 
     std::thread::spawn(move || {
         run(
-            file, cmd_rx, events_out, audio_enabled, track_muted, midi_conn, synth,
+            file, cmd_rx, events_out, audio_enabled, track_muted, track_channel, midi_conn, synth,
             keyboard_notes, octave_offset,
         );
     });
@@ -140,6 +144,15 @@ fn find_cursor(events: &[crate::midi::TimedEvent], tick: u64) -> usize {
     events.partition_point(|e| e.tick < tick)
 }
 
+/// The channel actually written to the wire/synth for a track's event. Notes
+/// keep whatever channel they were parsed with (drum-percussion detection and
+/// on-screen highlighting depend on that original value) — only the output
+/// byte is remapped, so a track can be routed to a different receiver channel
+/// on the connected hardware without changing how the file is interpreted.
+fn output_channel(track: usize, original_channel: u8, track_channel: &[u8]) -> u8 {
+    track_channel.get(track).copied().unwrap_or(original_channel)
+}
+
 /// Inverse of `tick_to_micros_abs`, used to report a smooth playhead even
 /// across long rests where there are no MIDI events to supply a tick value.
 fn tick_at_micros(file: &MidiFile, micros: u64) -> u64 {
@@ -170,6 +183,7 @@ fn run(
     events_out: Arc<Mutex<VecDeque<PlayEvent>>>,
     audio_enabled: Arc<AtomicBool>,
     mut track_muted: Vec<bool>,
+    mut track_channel: Vec<u8>,
     mut midi_conn: Option<midir::MidiOutputConnection>,
     synth: Option<Arc<Mutex<SoftSynth>>>,
     keyboard_notes: Arc<HashSet<u8>>,
@@ -178,6 +192,7 @@ fn run(
     let mut cursor = 0usize;
     let mut playing = false;
     let mut position_tick = 0u64;
+    let mut loop_range: Option<(u64, u64)> = None;
 
     // A note only actually sounds if it lands on a physical key once shifted.
     // GM percussion (channel 10) is exempt: those note numbers select a drum
@@ -215,6 +230,10 @@ fn run(
                 Ok(PlayCmd::SetTrackMuted(i, m)) => {
                     if let Some(s) = track_muted.get_mut(i) { *s = m; }
                 }
+                Ok(PlayCmd::SetTrackChannel(i, c)) => {
+                    if let Some(s) = track_channel.get_mut(i) { *s = c; }
+                }
+                Ok(PlayCmd::SetLoopRange(r)) => { loop_range = r; }
                 Ok(PlayCmd::SetAudio(v)) => {
                     audio_enabled.store(v, Ordering::Relaxed);
                 }
@@ -260,11 +279,12 @@ fn run(
                 if track_muted.get(note.track).copied().unwrap_or(false) { continue; }
 
                 if audio && fits_keyboard(note.midi_note, note.channel, octave_offset) {
+                    let out_ch = output_channel(note.track, note.channel, &track_channel);
                     if let Some(ref mut c) = midi_conn {
-                        c.send(&[0x90 | (note.channel & 0x0F), note.midi_note, note.velocity]).ok();
+                        c.send(&[0x90 | (out_ch & 0x0F), note.midi_note, note.velocity]).ok();
                     } else if let Some(ref s) = synth {
                         if let Ok(mut s) = s.lock() {
-                            s.note_on(note.midi_note, note.velocity, note.channel);
+                            s.note_on(note.midi_note, note.velocity, out_ch);
                         }
                     }
                 }
@@ -276,6 +296,22 @@ fn run(
 
         'playing: loop {
             let now_us = start_us.saturating_add(wall_start.elapsed().as_micros() as u64);
+
+            // A loop range wraps the transport back to its start the instant
+            // playback reaches its end, without waiting for a Done round-trip
+            // through the UI thread—so both section loops (a staff selection)
+            // and whole-song loops stay sample-accurate and gapless.
+            if let Some((loop_start, loop_end)) = loop_range {
+                let loop_end_us = tick_to_micros_abs(loop_end, &file.tempo_map, file.ticks_per_beat);
+                if now_us >= loop_end_us {
+                    all_notes_off(&mut midi_conn, &synth);
+                    position_tick = loop_start;
+                    cursor = find_cursor(&file.events, loop_start);
+                    publish_position(&events_out, loop_start, true);
+                    break 'playing; // `playing` stays true; the outer loop re-anchors the clock.
+                }
+            }
+
             let timeline_finished = cursor >= file.events.len();
             let event_us = file.events.get(cursor)
                 .map(|ev| tick_to_micros_abs(ev.tick, &file.tempo_map, file.ticks_per_beat))
@@ -283,10 +319,17 @@ fn run(
                     tick_to_micros_abs(file.total_ticks, &file.tempo_map, file.ticks_per_beat)
                 });
             let until_event_us = event_us.saturating_sub(now_us);
+            let until_loop_us = loop_range.map(|(_, loop_end)| {
+                tick_to_micros_abs(loop_end, &file.tempo_map, file.ticks_per_beat)
+                    .saturating_sub(now_us)
+            });
 
             // Wake at least every 20 ms to keep the playhead smooth, but wake
-            // immediately for any transport command—even during a long rest.
-            let wait_us = until_event_us.min(20_000);
+            // immediately for any transport command—even during a long rest—
+            // and no later than the loop point so the wrap stays tight.
+            let wait_us = until_event_us
+                .min(until_loop_us.unwrap_or(u64::MAX))
+                .min(20_000);
             match cmd_rx.recv_timeout(Duration::from_micros(wait_us)) {
                 Ok(PlayCmd::Pause) => {
                     position_tick = tick_at_micros(
@@ -316,6 +359,14 @@ fn run(
                 }
                 Ok(PlayCmd::SetTrackMuted(i, m)) => {
                     if let Some(s) = track_muted.get_mut(i) { *s = m; }
+                    continue;
+                }
+                Ok(PlayCmd::SetTrackChannel(i, c)) => {
+                    if let Some(s) = track_channel.get_mut(i) { *s = c; }
+                    continue;
+                }
+                Ok(PlayCmd::SetLoopRange(r)) => {
+                    loop_range = r;
                     continue;
                 }
                 Ok(PlayCmd::SetAudio(v)) => {
@@ -389,20 +440,22 @@ fn run(
                 match ev.kind {
                     EventKind::NoteOn { note, velocity } => {
                         if audio && fits_keyboard(note, ev.channel, octave_offset) {
+                            let out_ch = output_channel(ev.track, ev.channel, &track_channel);
                             if let Some(ref mut c) = midi_conn {
-                                c.send(&[0x90 | (ev.channel & 0x0F), note, velocity]).ok();
+                                c.send(&[0x90 | (out_ch & 0x0F), note, velocity]).ok();
                             } else if let Some(ref s) = synth {
-                                if let Ok(mut s) = s.lock() { s.note_on(note, velocity, ev.channel); }
+                                if let Ok(mut s) = s.lock() { s.note_on(note, velocity, out_ch); }
                             }
                         }
                         events_out.lock().unwrap().push_back(PlayEvent::NoteOn(note, ev.track, ev.channel));
                     }
                     EventKind::NoteOff { note } => {
                         if audio && fits_keyboard(note, ev.channel, octave_offset) {
+                            let out_ch = output_channel(ev.track, ev.channel, &track_channel);
                             if let Some(ref mut c) = midi_conn {
-                                c.send(&[0x80 | (ev.channel & 0x0F), note, 0]).ok();
+                                c.send(&[0x80 | (out_ch & 0x0F), note, 0]).ok();
                             } else if let Some(ref s) = synth {
-                                if let Ok(mut s) = s.lock() { s.note_off(note, ev.channel); }
+                                if let Ok(mut s) = s.lock() { s.note_off(note, out_ch); }
                             }
                         }
                         events_out.lock().unwrap().push_back(PlayEvent::NoteOff(note, ev.channel));
@@ -503,6 +556,7 @@ mod tests {
                 thread_events,
                 Arc::new(AtomicBool::new(false)),
                 vec![false],
+                vec![0],
                 None,
                 None,
                 Arc::new(HashSet::from([60])),

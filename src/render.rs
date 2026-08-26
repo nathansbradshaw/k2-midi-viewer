@@ -50,6 +50,10 @@ pub struct BoardCanvas<'a> {
     pub pressed: &'a HashSet<KeyId>,
     /// Computer-key labels shown over the note names in performance mode.
     pub projected_labels: Option<&'a HashMap<KeyId, String>>,
+    /// GM drum assignments for the numpad's 4x5 pad grid.
+    pub drum_note_to_key: &'a HashMap<u8, KeyId>,
+    /// Replace the numpad legends with instrument icons and names.
+    pub show_drum_symbols: bool,
     /// Current 0.0..=1.0 dial position of each of the 12 encoder knobs.
     pub knob_values: &'a [f32],
 }
@@ -180,6 +184,8 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                 self.selected_controls,
                 self.pressed,
                 self.projected_labels,
+                self.drum_note_to_key,
+                self.show_drum_symbols,
                 self.knob_values,
                 active_knob,
             );
@@ -284,6 +290,8 @@ fn draw_board(
     selected_controls: &HashSet<KeyId>,
     pressed: &HashSet<KeyId>,
     projected_labels: Option<&HashMap<KeyId, String>>,
+    drum_note_to_key: &HashMap<u8, KeyId>,
+    show_drum_symbols: bool,
     knob_values: &[f32],
     active_knob: Option<(u8, f32)>,
 ) {
@@ -512,7 +520,22 @@ fn draw_board(
             );
         }
 
+        let drum_note = show_drum_symbols
+            .then(|| {
+                drum_note_to_key.iter()
+                    .find_map(|(&note, &id)| (id == key.id).then_some(note))
+            })
+            .flatten();
         let projected_label = projected_labels.and_then(|labels| labels.get(&key.id));
+
+        if let Some(note) = drum_note {
+            draw_drum_symbol(frame, rect, note, text_color, projected_label.map(String::as_str));
+            if let Some(steps) = play_order.and_then(|order| order.get(&key.id)) {
+                draw_play_order_badge(frame, rect, steps);
+            }
+            continue;
+        }
+
         let primary_label = projected_label.map(String::as_str).unwrap_or(key.label);
         let secondary_label = if projected_label.is_some() && key.midi_note.is_some() {
             Some(key.label)
@@ -567,6 +590,223 @@ fn draw_board(
             draw_knob_slider(frame, knob_rect, value, knob_readout(idx, value));
         }
     }
+}
+
+fn drum_pad_name(note: u8) -> Option<&'static str> {
+    Some(match note {
+        36 => "KICK",
+        37 => "STICK",
+        38 => "SNARE",
+        39 => "CLAP",
+        40 => "E.SNARE",
+        41 => "LO FLOOR",
+        42 => "CLOSED HH",
+        43 => "HI FLOOR",
+        44 => "PEDAL HH",
+        45 => "LOW TOM",
+        46 => "OPEN HH",
+        47 => "LO-MID",
+        48 => "HI-MID",
+        49 => "CRASH",
+        50 => "HIGH TOM",
+        51 => "RIDE",
+        52 => "CHINA",
+        53 => "RIDE BELL",
+        54 => "TAMBO",
+        55 => "SPLASH",
+        _ => return None,
+    })
+}
+
+fn icon_line(frame: &mut Frame, from: Point, to: Point, color: Color, width: f32) {
+    frame.stroke(
+        &Path::line(from, to),
+        canvas::Stroke::default().with_color(color).with_width(width),
+    );
+}
+
+fn draw_drum_body(frame: &mut Frame, center: Point, color: Color, floor_legs: bool) {
+    let body = rounded_rect(
+        Rectangle { x: center.x - 9.0, y: center.y - 6.0, width: 18.0, height: 12.0 },
+        3.0,
+    );
+    frame.stroke(
+        &body,
+        canvas::Stroke::default().with_color(color).with_width(1.7),
+    );
+    icon_line(
+        frame,
+        Point::new(center.x - 8.0, center.y - 2.0),
+        Point::new(center.x + 8.0, center.y - 2.0),
+        color,
+        1.2,
+    );
+    if floor_legs {
+        icon_line(frame, Point::new(center.x - 6.0, center.y + 6.0), Point::new(center.x - 8.0, center.y + 10.0), color, 1.5);
+        icon_line(frame, Point::new(center.x + 6.0, center.y + 6.0), Point::new(center.x + 8.0, center.y + 10.0), color, 1.5);
+    }
+}
+
+fn draw_hi_hat(frame: &mut Frame, center: Point, color: Color, open: bool, pedal: bool) {
+    let spread = if open { 3.5 } else { 1.5 };
+    icon_line(frame, Point::new(center.x - 9.0, center.y - spread), Point::new(center.x + 9.0, center.y - spread), color, 1.7);
+    icon_line(frame, Point::new(center.x - 9.0, center.y + spread), Point::new(center.x + 9.0, center.y + spread), color, 1.7);
+    icon_line(frame, Point::new(center.x, center.y + spread), Point::new(center.x, center.y + 10.0), color, 1.4);
+    icon_line(frame, Point::new(center.x - 6.0, center.y + 10.0), Point::new(center.x + 6.0, center.y + 10.0), color, 1.4);
+    if pedal {
+        icon_line(frame, Point::new(center.x, center.y + 7.0), Point::new(center.x + 8.0, center.y + 10.0), color, 1.5);
+    }
+}
+
+fn draw_cymbal(frame: &mut Frame, center: Point, color: Color, small: bool) {
+    let half_width = if small { 7.0 } else { 11.0 };
+    let cymbal = Path::new(|b| {
+        b.move_to(Point::new(center.x - half_width, center.y));
+        b.quadratic_curve_to(
+            Point::new(center.x, center.y - 4.0),
+            Point::new(center.x + half_width, center.y),
+        );
+    });
+    frame.stroke(
+        &cymbal,
+        canvas::Stroke::default().with_color(color).with_width(1.8),
+    );
+    frame.fill(&Path::circle(Point::new(center.x, center.y - 2.0), 2.0), color);
+    icon_line(frame, Point::new(center.x, center.y), Point::new(center.x, center.y + 10.0), color, 1.4);
+    icon_line(frame, Point::new(center.x - 5.0, center.y + 10.0), Point::new(center.x + 5.0, center.y + 10.0), color, 1.4);
+}
+
+/// Draw a small pictogram plus a compact GM instrument name. The text keeps
+/// closely-related toms and cymbals unambiguous, while the shapes remain easy
+/// to scan during performance.
+fn draw_drum_symbol(
+    frame: &mut Frame,
+    rect: Rectangle,
+    note: u8,
+    color: Color,
+    computer_key: Option<&str>,
+) {
+    let Some(name) = drum_pad_name(note) else { return };
+    let center = Point::new(rect.x + rect.width / 2.0, rect.y + 20.0);
+
+    match note {
+        36 => {
+            let drum = Path::circle(center, 9.0);
+            frame.stroke(&drum, canvas::Stroke::default().with_color(color).with_width(1.8));
+            frame.fill(&Path::circle(center, 2.2), color);
+            icon_line(frame, Point::new(center.x - 6.0, center.y + 7.0), Point::new(center.x - 9.0, center.y + 11.0), color, 1.4);
+            icon_line(frame, Point::new(center.x + 6.0, center.y + 7.0), Point::new(center.x + 9.0, center.y + 11.0), color, 1.4);
+        }
+        37 => {
+            icon_line(frame, Point::new(center.x - 8.0, center.y + 8.0), Point::new(center.x + 8.0, center.y - 8.0), color, 2.2);
+            icon_line(frame, Point::new(center.x - 8.0, center.y - 8.0), Point::new(center.x + 8.0, center.y + 8.0), color, 2.2);
+            frame.fill(&Path::circle(Point::new(center.x - 8.0, center.y + 8.0), 1.8), color);
+            frame.fill(&Path::circle(Point::new(center.x + 8.0, center.y + 8.0), 1.8), color);
+        }
+        38 | 40 => {
+            draw_drum_body(frame, center, color, false);
+            if note == 40 {
+                let bolt = Path::new(|b| {
+                    b.move_to(Point::new(center.x + 1.0, center.y - 8.0));
+                    b.line_to(Point::new(center.x - 2.0, center.y - 1.0));
+                    b.line_to(Point::new(center.x + 2.0, center.y - 1.0));
+                    b.line_to(Point::new(center.x - 1.0, center.y + 7.0));
+                });
+                frame.stroke(&bolt, canvas::Stroke::default().with_color(color).with_width(1.4));
+            }
+        }
+        39 => {
+            let hand = rounded_rect(
+                Rectangle { x: center.x - 6.0, y: center.y - 1.0, width: 12.0, height: 10.0 },
+                3.0,
+            );
+            frame.stroke(&hand, canvas::Stroke::default().with_color(color).with_width(1.5));
+            for offset in [-6.0, -2.0, 2.0, 6.0] {
+                icon_line(frame, Point::new(center.x + offset, center.y - 1.0), Point::new(center.x + offset, center.y - 9.0 + offset.abs() * 0.25), color, 1.5);
+            }
+        }
+        41 | 43 => {
+            draw_drum_body(frame, center, color, true);
+            let dot_y = if note == 41 { center.y + 2.0 } else { center.y - 4.0 };
+            frame.fill(&Path::circle(Point::new(center.x, dot_y), 1.8), color);
+        }
+        42 => draw_hi_hat(frame, center, color, false, false),
+        44 => draw_hi_hat(frame, center, color, false, true),
+        46 => draw_hi_hat(frame, center, color, true, false),
+        45 | 47 | 48 | 50 => {
+            draw_drum_body(frame, center, color, false);
+            let dot_y = match note {
+                45 => center.y + 3.0,
+                47 => center.y + 1.0,
+                48 => center.y - 2.0,
+                _ => center.y - 4.0,
+            };
+            frame.fill(&Path::circle(Point::new(center.x, dot_y), 1.8), color);
+        }
+        49 => {
+            draw_cymbal(frame, center, color, false);
+            for (dx, dy) in [(-12.0, -5.0), (12.0, -5.0), (0.0, -11.0)] {
+                icon_line(frame, Point::new(center.x + dx * 0.72, center.y + dy * 0.72), Point::new(center.x + dx, center.y + dy), color, 1.2);
+            }
+        }
+        51 => draw_cymbal(frame, center, color, false),
+        52 => {
+            let china = Path::new(|b| {
+                b.move_to(Point::new(center.x - 11.0, center.y - 3.0));
+                b.quadratic_curve_to(Point::new(center.x, center.y + 5.0), Point::new(center.x + 11.0, center.y - 3.0));
+            });
+            frame.stroke(&china, canvas::Stroke::default().with_color(color).with_width(1.8));
+            frame.fill(&Path::circle(Point::new(center.x, center.y), 2.0), color);
+            icon_line(frame, Point::new(center.x, center.y + 1.0), Point::new(center.x, center.y + 10.0), color, 1.4);
+        }
+        53 => {
+            let bell = Path::new(|b| {
+                b.move_to(Point::new(center.x - 8.0, center.y + 6.0));
+                b.quadratic_curve_to(Point::new(center.x - 5.0, center.y - 7.0), Point::new(center.x, center.y - 8.0));
+                b.quadratic_curve_to(Point::new(center.x + 5.0, center.y - 7.0), Point::new(center.x + 8.0, center.y + 6.0));
+                b.line_to(Point::new(center.x - 8.0, center.y + 6.0));
+            });
+            frame.stroke(&bell, canvas::Stroke::default().with_color(color).with_width(1.7));
+            frame.fill(&Path::circle(Point::new(center.x, center.y + 8.0), 2.0), color);
+        }
+        54 => {
+            let ring = Path::circle(center, 8.0);
+            frame.stroke(&ring, canvas::Stroke::default().with_color(color).with_width(1.8));
+            for (dx, dy) in [(0.0, -10.0), (9.0, -4.0), (9.0, 4.0), (0.0, 10.0), (-9.0, 4.0), (-9.0, -4.0)] {
+                frame.fill(&Path::circle(Point::new(center.x + dx, center.y + dy), 1.7), color);
+            }
+        }
+        55 => {
+            draw_cymbal(frame, center, color, true);
+            for (dx, dy) in [(-9.0, -7.0), (0.0, -11.0), (9.0, -7.0)] {
+                icon_line(frame, Point::new(center.x + dx * 0.7, center.y + dy * 0.7), Point::new(center.x + dx, center.y + dy), color, 1.2);
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(key) = computer_key {
+        frame.fill_text(Text {
+            content: key.to_string(),
+            position: Point::new(rect.x + 5.0, rect.y + 4.0),
+            color: Color { a: 0.58, ..color },
+            size: iced::Pixels(7.0),
+            font: CANVAS_FONT,
+            align_x: Horizontal::Left.into(),
+            ..Text::default()
+        });
+    }
+
+    frame.fill_text(Text {
+        content: name.to_string(),
+        position: Point::new(rect.x + rect.width / 2.0, rect.y + rect.height - 7.0),
+        color,
+        size: iced::Pixels(if name.len() > 8 { 7.0 } else { 8.0 }),
+        font: CANVAS_FONT,
+        align_x: Horizontal::Center.into(),
+        align_y: Vertical::Center,
+        ..Text::default()
+    });
 }
 
 /// Draws a compact, high-contrast sequence badge in the key's upper-right
@@ -743,5 +983,16 @@ mod tests {
         assert_eq!(board_inset_x(1484.0), 77.0);
         assert_eq!(board_inset_x(1400.0), 35.0);
         assert_eq!(board_inset_x(1200.0), MIN_BOARD_INSET_X);
+    }
+
+    #[test]
+    fn every_drum_pad_has_a_distinct_display_name() {
+        let names: Vec<&str> = (36..=55).filter_map(drum_pad_name).collect();
+        let distinct: HashSet<&str> = names.iter().copied().collect();
+
+        assert_eq!(names.len(), 20);
+        assert_eq!(distinct.len(), 20);
+        assert_eq!(drum_pad_name(35), None);
+        assert_eq!(drum_pad_name(56), None);
     }
 }

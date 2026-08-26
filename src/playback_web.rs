@@ -23,6 +23,8 @@ pub enum PlayCmd {
     SeekTo(u64),
     SetAudio(bool),
     SetTrackMuted(usize, bool),
+    SetTrackChannel(usize, u8),
+    SetLoopRange(Option<(u64, u64)>),
     SetOctaveOffset(i8),
     SetWaveforms(Vec<crate::synth::Waveform>),
     SetKnob(u8, f32),
@@ -256,6 +258,7 @@ pub fn spawn(
     events_out: Arc<Mutex<VecDeque<PlayEvent>>>,
     audio_enabled: Arc<AtomicBool>,
     track_muted: Vec<bool>,
+    track_channel: Vec<u8>,
     midi_conn: Option<MidiOutputConnection>,
     keyboard_notes: Arc<HashSet<u8>>,
     octave_offset: i8,
@@ -274,6 +277,8 @@ pub fn spawn(
         events_out,
         audio_enabled,
         track_muted,
+        track_channel,
+        loop_range: None,
         keyboard_notes,
         octave_offset,
         synth: shared_synth,
@@ -297,6 +302,9 @@ struct WebPlayback {
     events_out: Arc<Mutex<VecDeque<PlayEvent>>>,
     audio_enabled: Arc<AtomicBool>,
     track_muted: Vec<bool>,
+    track_channel: Vec<u8>,
+    /// (start_tick, end_tick) currently being repeated, or `None`.
+    loop_range: Option<(u64, u64)>,
     keyboard_notes: Arc<HashSet<u8>>,
     octave_offset: i8,
     synth: Option<Arc<Mutex<SoftSynth>>>,
@@ -317,12 +325,20 @@ impl WebPlayback {
         }
 
         let elapsed = Instant::now().duration_since(self.wall_start);
-        let target_micros = self.start_micros.saturating_add(duration_micros(elapsed));
+        let raw_target_micros = self.start_micros.saturating_add(duration_micros(elapsed));
         let total_micros = tick_to_micros_abs(
             self.file.total_ticks,
             &self.file.tempo_map,
             self.file.ticks_per_beat,
         );
+        // A loop range wraps the transport back to its start the instant
+        // playback reaches its end—so both section loops (a staff selection)
+        // and whole-song loops stay sample-accurate and gapless, without
+        // waiting for a Done round-trip through the UI thread.
+        let loop_end_micros = self.loop_range.map(|(_, end)| {
+            tick_to_micros_abs(end, &self.file.tempo_map, self.file.ticks_per_beat)
+        });
+        let target_micros = loop_end_micros.map_or(raw_target_micros, |end| raw_target_micros.min(end));
 
         while let Some(event) = self.file.events.get(self.cursor) {
             let event_micros =
@@ -338,6 +354,14 @@ impl WebPlayback {
 
         self.position_tick = tick_at_micros(&self.file, target_micros.min(total_micros));
         self.publish(PlayEvent::Position(self.position_tick));
+
+        if let (Some((loop_start, _)), Some(loop_end_micros)) = (self.loop_range, loop_end_micros) {
+            if raw_target_micros >= loop_end_micros {
+                self.seek_to(loop_start);
+                self.clear_and_publish(PlayEvent::Position(self.position_tick));
+                return;
+            }
+        }
 
         if target_micros >= total_micros {
             self.all_notes_off();
@@ -384,21 +408,7 @@ impl WebPlayback {
                     self.clear_and_publish(PlayEvent::Position(0));
                 }
                 PlayCmd::SeekTo(tick) => {
-                    self.all_notes_off();
-                    self.position_tick = tick.min(self.file.total_ticks);
-                    self.cursor = self
-                        .file
-                        .events
-                        .partition_point(|event| event.tick < self.position_tick);
-                    self.start_micros = tick_to_micros_abs(
-                        self.position_tick,
-                        &self.file.tempo_map,
-                        self.file.ticks_per_beat,
-                    );
-                    self.wall_start = Instant::now();
-                    if self.playing {
-                        self.restore_held_notes();
-                    }
+                    self.seek_to(tick);
                     self.clear_and_publish(PlayEvent::Position(self.position_tick));
                 }
                 PlayCmd::SetAudio(enabled) => {
@@ -415,6 +425,12 @@ impl WebPlayback {
                         self.all_notes_off();
                     }
                 }
+                PlayCmd::SetTrackChannel(index, channel) => {
+                    if let Some(value) = self.track_channel.get_mut(index) {
+                        *value = channel;
+                    }
+                }
+                PlayCmd::SetLoopRange(range) => self.loop_range = range,
                 PlayCmd::SetOctaveOffset(offset) => self.octave_offset = offset,
                 PlayCmd::SetWaveforms(waveforms) => {
                     if let Some(ref synth) = self.synth {
@@ -444,6 +460,27 @@ impl WebPlayback {
         }
     }
 
+    /// Re-anchors the playback clock at `tick`, restoring any notes that
+    /// should already be sounding there. Shared by explicit seeks and by
+    /// loop wraps, which are just a seek back to the loop start.
+    fn seek_to(&mut self, tick: u64) {
+        self.all_notes_off();
+        self.position_tick = tick.min(self.file.total_ticks);
+        self.cursor = self
+            .file
+            .events
+            .partition_point(|event| event.tick < self.position_tick);
+        self.start_micros = tick_to_micros_abs(
+            self.position_tick,
+            &self.file.tempo_map,
+            self.file.ticks_per_beat,
+        );
+        self.wall_start = Instant::now();
+        if self.playing {
+            self.restore_held_notes();
+        }
+    }
+
     fn capture_position(&mut self) {
         if !self.playing {
             return;
@@ -464,14 +501,20 @@ impl WebPlayback {
                 if self.audio_enabled.load(Ordering::Relaxed)
                     && self.fits_keyboard(note, event.channel)
                 {
-                    self.note_on(note, velocity, event.channel);
+                    self.note_on(note, velocity, self.output_channel(event.track, event.channel));
                 }
             }
             EventKind::NoteOff { note } => {
                 self.publish(PlayEvent::NoteOff(note, event.channel));
-                self.note_off(note, event.channel);
+                self.note_off(note, self.output_channel(event.track, event.channel));
             }
         }
+    }
+
+    /// The channel actually written to the wire/synth for a track's event —
+    /// see the native implementation in `playback.rs` for the rationale.
+    fn output_channel(&self, track: usize, original_channel: u8) -> u8 {
+        self.track_channel.get(track).copied().unwrap_or(original_channel)
     }
 
     fn restore_held_notes(&mut self) {
@@ -494,7 +537,8 @@ impl WebPlayback {
             if self.audio_enabled.load(Ordering::Relaxed)
                 && self.fits_keyboard(note.midi_note, note.channel)
             {
-                self.note_on(note.midi_note, note.velocity, note.channel);
+                let out_ch = self.output_channel(note.track, note.channel);
+                self.note_on(note.midi_note, note.velocity, out_ch);
             }
         }
     }

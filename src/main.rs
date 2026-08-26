@@ -16,8 +16,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use iced::widget::canvas::Canvas;
-use iced::widget::{button, checkbox, column, container, row, scrollable, slider, text};
-use iced::{Alignment, Background, Border, Color, Element, Length, Shadow, Size, Subscription, Task, Theme, Vector};
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, scrollable, slider, text,
+};
+use iced::{
+    Alignment, Background, Border, Color, Element, Length, Shadow, Size, Subscription, Task, Theme,
+    Vector,
+};
 
 use key::{Cluster, Key, KeyId};
 use layout::build_layout;
@@ -65,7 +70,11 @@ fn app_icon() -> iced::window::Icon {
 fn panel_style(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(PANEL_BG)),
-        border: Border { color: PANEL_BORDER, width: 1.0, radius: 10.0.into() },
+        border: Border {
+            color: PANEL_BORDER,
+            width: 1.0,
+            radius: 10.0.into(),
+        },
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.28),
             offset: Vector::new(0.0, 2.0),
@@ -87,11 +96,7 @@ fn control_style(_: &Theme, status: button::Status) -> button::Style {
             Color::WHITE,
             Color::from_rgb(0.54, 0.29, 0.53),
         ),
-        button::Status::Pressed => (
-            Color::from_rgb(0.075, 0.06, 0.12),
-            TEXT_MAIN,
-            ACCENT,
-        ),
+        button::Status::Pressed => (Color::from_rgb(0.075, 0.06, 0.12), TEXT_MAIN, ACCENT),
         button::Status::Disabled => (
             Color::from_rgb(0.085, 0.075, 0.12),
             TEXT_MUTED,
@@ -101,13 +106,68 @@ fn control_style(_: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: Some(Background::Color(background)),
         text_color,
-        border: Border { color: border_color, width: 1.0, radius: 7.0.into() },
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: 7.0.into(),
+        },
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
-            offset: Vector::new(0.0, if status == button::Status::Pressed { 0.0 } else { 1.0 }),
+            offset: Vector::new(
+                0.0,
+                if status == button::Status::Pressed {
+                    0.0
+                } else {
+                    1.0
+                },
+            ),
             blur_radius: 2.0,
         },
         snap: false,
+    }
+}
+
+/// A 1-indexed MIDI channel number for display in a [`pick_list`] dropdown,
+/// labeled with `prefix` (e.g. "CH" or "PLAY CH") to match the control it
+/// replaces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ChannelOption {
+    prefix: &'static str,
+    channel: u8,
+}
+
+impl std::fmt::Display for ChannelOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.prefix, self.channel)
+    }
+}
+
+fn channel_options(prefix: &'static str) -> Vec<ChannelOption> {
+    (1..=16u8).map(|channel| ChannelOption { prefix, channel }).collect()
+}
+
+fn channel_pick_list_style(_: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let (background, border_color) = match status {
+        pick_list::Status::Active => (
+            Color::from_rgb(0.13, 0.105, 0.18),
+            Color::from_rgb(0.32, 0.22, 0.40),
+        ),
+        pick_list::Status::Hovered => (
+            Color::from_rgb(0.24, 0.14, 0.30),
+            Color::from_rgb(0.54, 0.29, 0.53),
+        ),
+        pick_list::Status::Opened { .. } => (Color::from_rgb(0.075, 0.06, 0.12), ACCENT),
+    };
+    pick_list::Style {
+        text_color: TEXT_MAIN,
+        placeholder_color: TEXT_MUTED,
+        handle_color: TEXT_MUTED,
+        background: Background::Color(background),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: 7.0.into(),
+        },
     }
 }
 
@@ -120,8 +180,16 @@ fn accent_style(_: &Theme, status: button::Status) -> button::Style {
     };
     button::Style {
         background: Some(Background::Color(background)),
-        text_color: if status == button::Status::Disabled { TEXT_MUTED } else { Color::WHITE },
-        border: Border { color: Color::from_rgb(1.0, 0.53, 0.45), width: 1.0, radius: 7.0.into() },
+        text_color: if status == button::Status::Disabled {
+            TEXT_MUTED
+        } else {
+            Color::WHITE
+        },
+        border: Border {
+            color: Color::from_rgb(1.0, 0.53, 0.45),
+            width: 1.0,
+            radius: 7.0.into(),
+        },
         shadow: Shadow {
             color: Color::from_rgba(1.0, 0.20, 0.42, 0.28),
             offset: Vector::new(0.0, 2.0),
@@ -197,12 +265,28 @@ fn normalize_computer_key(
                 character.as_str()
             } else {
                 match character.as_str() {
-                    "~" => "`", "!" => "1", "@" => "2", "#" => "3",
-                    "$" => "4", "%" => "5", "^" => "6", "&" => "7",
-                    "*" => "8", "(" => "9", ")" => "0", "_" => "-",
-                    "+" => "=", "{" => "[", "}" => "]", "|" => "\\",
-                    ":" => ";", "\"" => "'", "<" => ",", ">" => ".",
-                    "?" => "/", other => other,
+                    "~" => "`",
+                    "!" => "1",
+                    "@" => "2",
+                    "#" => "3",
+                    "$" => "4",
+                    "%" => "5",
+                    "^" => "6",
+                    "&" => "7",
+                    "*" => "8",
+                    "(" => "9",
+                    ")" => "0",
+                    "_" => "-",
+                    "+" => "=",
+                    "{" => "[",
+                    "}" => "]",
+                    "|" => "\\",
+                    ":" => ";",
+                    "\"" => "'",
+                    "<" => ",",
+                    ">" => ".",
+                    "?" => "/",
+                    other => other,
                 }
             };
             Some(ComputerKey::Character(character.to_string(), location))
@@ -223,9 +307,7 @@ fn computer_keyboard_event(
         iced::Event::Keyboard(iced::keyboard::Event::KeyReleased { key, location, .. }) => {
             normalize_computer_key(key, location).map(Message::ComputerKeyReleased)
         }
-        iced::Event::Window(iced::window::Event::Unfocused) => {
-            Some(Message::ReleaseComputerKeys)
-        }
+        iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::ReleaseComputerKeys),
         _ => None,
     }
 }
@@ -240,17 +322,17 @@ fn octave_shortcut_event(
     _window: iced::window::Id,
 ) -> Option<Message> {
     match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, repeat: false, .. }) => {
-            match key {
-                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
-                    Some(Message::LiveOctaveUp)
-                }
-                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
-                    Some(Message::LiveOctaveDown)
-                }
-                _ => None,
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key, repeat: false, ..
+        }) => match key {
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
+                Some(Message::LiveOctaveUp)
             }
-        }
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
+                Some(Message::LiveOctaveDown)
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -289,60 +371,71 @@ struct App {
     window_size: Size,
 
     // keyboard
-    keys:             Vec<Key>,
+    keys: Vec<Key>,
     note_to_all_keys: HashMap<u8, Vec<KeyId>>,
     drum_note_to_key: HashMap<u8, KeyId>, // GM percussion note → drum pad key
-    key_pos:          HashMap<KeyId, (f32, f32)>, // KeyId → (col, row), for nearest-key picking
-    keyboard_notes:        std::collections::HashSet<u8>,
+    key_pos: HashMap<KeyId, (f32, f32)>,  // KeyId → (col, row), for nearest-key picking
+    keyboard_notes: std::collections::HashSet<u8>,
     keyboard_notes_sorted: Vec<u8>, // ascending, for nearest-key search
-    highlighted:           HashMap<KeyId, usize>, // KeyId → track index
+    highlighted: HashMap<KeyId, usize>, // KeyId → track index
     /// Nav-cluster waveform-select keys currently toggled on; each one is a
     /// layer summed together in the synth (empty ⇒ Organ). See
     /// `active_waveforms`.
-    waveform_keys:         HashSet<KeyId>,
-    pressed_keys:          HashSet<KeyId>,
+    waveform_keys: HashSet<KeyId>,
+    pressed_keys: HashSet<KeyId>,
     keyboard_hits_enabled: bool,
-    computer_keys_down:    HashMap<ComputerKey, Vec<KeyId>>,
-    computer_key_labels:   HashMap<KeyId, String>,
-    knob_values:           [f32; synth::KNOB_COUNT], // 0.0..=1.0 dial position per knob
+    drum_symbols_enabled: bool,
+    computer_keys_down: HashMap<ComputerKey, Vec<KeyId>>,
+    computer_key_labels: HashMap<KeyId, String>,
+    knob_values: [f32; synth::KNOB_COUNT], // 0.0..=1.0 dial position per knob
     /// Semitone transpose applied only to hand-played notes (mouse/computer
     /// keys), independent of `octave_offset` — which instead remaps which
     /// board key lights up for a file's notes and shifts file playback.
-    live_octave:           i8,
+    live_octave: i8,
     /// The exact (shifted note, channel) actually sent for each currently
     /// held hand-played key, so release always turns off what was actually
     /// turned on even if `live_octave` changes while the key is held.
-    live_note_overrides:   HashMap<KeyId, (u8, u8)>,
+    live_note_overrides: HashMap<KeyId, (u8, u8)>,
+    /// Output channel (0-indexed) for hand-played notes — mouse/computer
+    /// keys and the physical board. Drum pads always send on
+    /// `synth::DRUM_CHANNEL` regardless of this setting.
+    live_channel: u8,
 
     // MIDI file
-    midi_file:        Option<midi::MidiFile>,
-    octave_offset:    i8,
-    pitch_step:       i8,          // 1 = semitone, 12 = octave
-    key_pick_mode:    KeyPickMode, // which duplicate key to light when a note repeats across rows
+    midi_file: Option<midi::MidiFile>,
+    octave_offset: i8,
+    pitch_step: i8,             // 1 = semitone, 12 = octave
+    key_pick_mode: KeyPickMode, // which duplicate key to light when a note repeats across rows
     /// Closest mode's precomputed answer, shared by every highlight path (live
     /// playback, the selection view, and the all-notes overlay) so a given
     /// note always lands on the same key everywhere instead of live playback
     /// re-deciding greedily — and losing context — every time a note re-fires.
     closest_key_for_note: HashMap<u8, KeyId>,
-    show_all_notes:   bool,        // overlay every note in the file on the keyboard
-    all_notes_cache:  HashMap<KeyId, usize>, // precomputed for show_all_notes
-    skipped_notes:   usize,
-    track_muted:     Vec<bool>,
-    load_error:      Option<String>,
+    show_all_notes: bool, // overlay every note in the file on the keyboard
+    all_notes_cache: HashMap<KeyId, usize>, // precomputed for show_all_notes
+    skipped_notes: usize,
+    track_muted: Vec<bool>,
+    /// Output channel (0-indexed) each track sends on. Defaults to the
+    /// track's original channel from the file, but can be remapped per
+    /// track — e.g. to route a specific voice to a specific channel on the
+    /// connected hardware.
+    track_channel: Vec<u8>,
+    load_error: Option<String>,
 
     // playback
     playback_handle: Option<PlaybackHandle>,
-    play_state:      PlayState,
-    position_tick:   u64,
-    audio_enabled:   Arc<AtomicBool>,
+    play_state: PlayState,
+    looper_enabled: bool,
+    position_tick: u64,
+    audio_enabled: Arc<AtomicBool>,
     playback_events: Arc<Mutex<VecDeque<PlayEvent>>>,
-    soft_synth:      Option<Arc<Mutex<synth::SoftSynth>>>,
-    _audio_stream:   Option<cpal::Stream>,
-    audio_error:     Option<String>,
+    soft_synth: Option<Arc<Mutex<synth::SoftSynth>>>,
+    _audio_stream: Option<cpal::Stream>,
+    audio_error: Option<String>,
 
     // MIDI output
     midi_port_names: Vec<String>,
-    midi_port_idx:   usize,
+    midi_port_idx: usize,
 
     // Web MIDI for supporting desktop browsers (browser build only)
     #[cfg(target_arch = "wasm32")]
@@ -371,11 +464,11 @@ struct App {
     web_midi_status: Option<String>,
 
     // staff selection
-    staff_selection:          Option<(u64, u64)>,
+    staff_selection: Option<(u64, u64)>,
     selection_highlight_cache: HashMap<KeyId, usize>,
     /// One or more chronological play-step numbers displayed on each key while
     /// a staff range is selected. Notes that begin together share a step.
-    selection_play_order:      HashMap<KeyId, Vec<usize>>,
+    selection_play_order: HashMap<KeyId, Vec<usize>>,
 }
 
 impl Default for App {
@@ -391,33 +484,32 @@ impl Default for App {
         // context suspended. Initialize it from the first click/key instead.
         #[cfg(target_arch = "wasm32")]
         let (soft_synth, audio_stream, audio_error) = (None, None, None);
-        let mut keyboard_notes_sorted: Vec<u8> =
-            layout.keyboard_notes.iter().copied().collect();
+        let mut keyboard_notes_sorted: Vec<u8> = layout.keyboard_notes.iter().copied().collect();
         keyboard_notes_sorted.sort_unstable();
 
-        let key_pos: HashMap<KeyId, (f32, f32)> = layout.keys
-            .iter()
-            .map(|k| (k.id, (k.col, k.row)))
-            .collect();
+        let key_pos: HashMap<KeyId, (f32, f32)> =
+            layout.keys.iter().map(|k| (k.id, (k.col, k.row))).collect();
         let computer_key_labels = computer_projection_labels(&layout.keys);
 
         let mut app = App {
             window_size: Size::new(1520.0, 900.0),
 
-            keyboard_notes:        layout.keyboard_notes,
+            keyboard_notes: layout.keyboard_notes,
             keyboard_notes_sorted,
-            keys:                  layout.keys,
-            note_to_all_keys:      layout.note_to_all_keys,
-            drum_note_to_key:      layout.drum_note_to_key,
+            keys: layout.keys,
+            note_to_all_keys: layout.note_to_all_keys,
+            drum_note_to_key: layout.drum_note_to_key,
             key_pos,
-            highlighted:           HashMap::new(),
-            waveform_keys:         HashSet::new(),
-            pressed_keys:          HashSet::new(),
+            highlighted: HashMap::new(),
+            waveform_keys: HashSet::new(),
+            pressed_keys: HashSet::new(),
             keyboard_hits_enabled: false,
-            computer_keys_down:    HashMap::new(),
+            drum_symbols_enabled: false,
+            computer_keys_down: HashMap::new(),
             computer_key_labels,
-            live_octave:           0,
-            live_note_overrides:   HashMap::new(),
+            live_octave: 0,
+            live_note_overrides: HashMap::new(),
+            live_channel: 1,
             knob_values: {
                 let mut values = [0.0f32; synth::KNOB_COUNT];
                 for (slot, param) in values.iter_mut().zip(synth::KNOB_PARAMS.iter()) {
@@ -426,27 +518,29 @@ impl Default for App {
                 values
             },
 
-            midi_file:        None,
-            octave_offset:    0,
-            pitch_step:       12,
-            key_pick_mode:    KeyPickMode::LeftRight,
-            show_all_notes:   false,
+            midi_file: None,
+            octave_offset: 0,
+            pitch_step: 12,
+            key_pick_mode: KeyPickMode::Closest,
+            show_all_notes: false,
             closest_key_for_note: HashMap::new(),
-            all_notes_cache:  HashMap::new(),
-            skipped_notes:   0,
-            track_muted:     Vec::new(),
-            load_error:      None,
+            all_notes_cache: HashMap::new(),
+            skipped_notes: 0,
+            track_muted: Vec::new(),
+            track_channel: Vec::new(),
+            load_error: None,
 
             playback_handle: None,
-            play_state:      PlayState::Stopped,
-            position_tick:   0,
-            audio_enabled:   Arc::new(AtomicBool::new(true)),
+            play_state: PlayState::Stopped,
+            looper_enabled: false,
+            position_tick: 0,
+            audio_enabled: Arc::new(AtomicBool::new(true)),
             playback_events: Arc::new(Mutex::new(VecDeque::new())),
             soft_synth,
             _audio_stream: audio_stream,
             audio_error,
 
-            midi_port_idx:   0,
+            midi_port_idx: 0,
             midi_port_names,
 
             #[cfg(target_arch = "wasm32")]
@@ -474,9 +568,9 @@ impl Default for App {
             #[cfg(target_arch = "wasm32")]
             web_midi_status: None,
 
-            staff_selection:           None,
+            staff_selection: None,
             selection_highlight_cache: HashMap::new(),
-            selection_play_order:      HashMap::new(),
+            selection_play_order: HashMap::new(),
         };
         apply_url_settings(&mut app);
         app
@@ -495,6 +589,7 @@ pub enum Message {
     KeyReleased(KeyId),
     KnobChanged(u8, f32), // knob index, 0.0..=1.0 dial position
     ToggleKeyboardHits,
+    ToggleDrumSymbols,
     ComputerKeyPressed(ComputerKey),
     ComputerKeyReleased(ComputerKey),
     ReleaseComputerKeys,
@@ -513,11 +608,15 @@ pub enum Message {
     ToggleAllNotes,
     // tracks
     TrackMuted(usize, bool),
+    TrackChannel(usize, u8),
+    // channel
+    LiveChannel(u8),
     // transport
     Play,
     Pause,
     Stop,
-    SeekTo(f32),   // 0.0..=1.0 progress
+    ToggleLooper,
+    SeekTo(f32), // 0.0..=1.0 progress
     PollPlayback,
     // audio
     ToggleAudio,
@@ -543,7 +642,11 @@ pub enum Message {
 fn pick_key_fixed(kids: &[KeyId], mode: KeyPickMode) -> Option<KeyId> {
     match kids {
         [] => None,
-        _ => Some(if mode == KeyPickMode::UpDown { kids[0] } else { *kids.last().unwrap() }),
+        _ => Some(if mode == KeyPickMode::UpDown {
+            kids[0]
+        } else {
+            *kids.last().unwrap()
+        }),
     }
 }
 
@@ -553,21 +656,27 @@ fn pick_key_fixed(kids: &[KeyId], mode: KeyPickMode) -> Option<KeyId> {
 /// choice, so multiple can be toggled on at once and their outputs blend.
 const WAVEFORM_KEYS: [(&str, synth::Waveform); 6] = [
     ("Insert", synth::Waveform::Triangle),
-    ("Home",   synth::Waveform::Square),
-    ("PgUp",   synth::Waveform::Saw),
+    ("Home", synth::Waveform::Square),
+    ("PgUp", synth::Waveform::Saw),
     ("Delete", synth::Waveform::Sine),
-    ("End",    synth::Waveform::Pulse),
-    ("PgDn",   synth::Waveform::Noise),
+    ("End", synth::Waveform::Pulse),
+    ("PgDn", synth::Waveform::Noise),
 ];
 
 fn waveform_for_label(label: &str) -> Option<synth::Waveform> {
-    WAVEFORM_KEYS.iter().find(|(l, _)| *l == label).map(|(_, w)| *w)
+    WAVEFORM_KEYS
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, w)| *w)
 }
 
 // Only consumed by `url_state`, which is wasm-only.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn label_for_waveform(w: synth::Waveform) -> Option<&'static str> {
-    WAVEFORM_KEYS.iter().find(|(_, ww)| *ww == w).map(|(l, _)| *l)
+    WAVEFORM_KEYS
+        .iter()
+        .find(|(_, ww)| *ww == w)
+        .map(|(l, _)| *l)
 }
 
 /// Toggles `pressed_key` in the set of active waveform-select keys — press
@@ -579,14 +688,13 @@ fn toggle_waveform_key(active: &mut HashSet<KeyId>, pressed_key: KeyId) {
 }
 
 fn key_range(keys: &[Key], row: f32, start: usize, end: usize) -> Vec<KeyId> {
-    let mut row_keys: Vec<&Key> = keys.iter()
-        .filter(|key| {
-            matches!(key.cluster, Cluster::Alpha | Cluster::AlphaLight)
-                && key.row == row
-        })
+    let mut row_keys: Vec<&Key> = keys
+        .iter()
+        .filter(|key| matches!(key.cluster, Cluster::Alpha | Cluster::AlphaLight) && key.row == row)
         .collect();
     row_keys.sort_by(|a, b| a.col.total_cmp(&b.col));
-    row_keys.get(start..=end)
+    row_keys
+        .get(start..=end)
         .unwrap_or(&[])
         .iter()
         .map(|key| key.id)
@@ -601,11 +709,15 @@ fn cluster_key(keys: &[Key], cluster: Cluster, label: &str) -> Vec<KeyId> {
 }
 
 fn numpad_range(keys: &[Key], indices: &[usize]) -> Vec<KeyId> {
-    let mut numpad: Vec<&Key> = keys.iter()
+    let mut numpad: Vec<&Key> = keys
+        .iter()
         .filter(|key| key.cluster == Cluster::Numpad)
         .collect();
     numpad.sort_by(|a, b| a.row.total_cmp(&b.row).then(a.col.total_cmp(&b.col)));
-    indices.iter().filter_map(|&index| numpad.get(index).map(|key| key.id)).collect()
+    indices
+        .iter()
+        .filter_map(|&index| numpad.get(index).map(|key| key.id))
+        .collect()
 }
 
 fn mapped_computer_keys(keys: &[Key], computer_key: &ComputerKey) -> Vec<KeyId> {
@@ -613,15 +725,37 @@ fn mapped_computer_keys(keys: &[Key], computer_key: &ComputerKey) -> Vec<KeyId> 
 
     let alpha_span = match computer_key {
         ComputerKey::Character(character, ComputerKeyLocation::Standard) => {
-            const ROW_1: [&str; 13] = ["`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="];
-            const ROW_2: [&str; 13] = ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "[", "]", "\\"];
+            const ROW_1: [&str; 13] = [
+                "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=",
+            ];
+            const ROW_2: [&str; 13] = [
+                "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "[", "]", "\\",
+            ];
             const ROW_3: [&str; 11] = ["a", "s", "d", "f", "g", "h", "j", "k", "l", ";", "'"];
             const ROW_4: [&str; 10] = ["z", "x", "c", "v", "b", "n", "m", ",", ".", "/"];
 
-            ROW_1.iter().position(|value| *value == character).map(|index| (1.0, index, index))
-                .or_else(|| ROW_2.iter().position(|value| *value == character).map(|index| (2.0, index + 2, index + 2)))
-                .or_else(|| ROW_3.iter().position(|value| *value == character).map(|index| (3.0, index + 1, index + 1)))
-                .or_else(|| ROW_4.iter().position(|value| *value == character).map(|index| (4.0, index + 2, index + 2)))
+            ROW_1
+                .iter()
+                .position(|value| *value == character)
+                .map(|index| (1.0, index, index))
+                .or_else(|| {
+                    ROW_2
+                        .iter()
+                        .position(|value| *value == character)
+                        .map(|index| (2.0, index + 2, index + 2))
+                })
+                .or_else(|| {
+                    ROW_3
+                        .iter()
+                        .position(|value| *value == character)
+                        .map(|index| (3.0, index + 1, index + 1))
+                })
+                .or_else(|| {
+                    ROW_4
+                        .iter()
+                        .position(|value| *value == character)
+                        .map(|index| (4.0, index + 2, index + 2))
+                })
         }
         ComputerKey::Named(Named::Backspace, ComputerKeyLocation::Standard) => Some((1.0, 13, 13)),
         ComputerKey::Named(Named::Tab, ComputerKeyLocation::Standard) => Some((2.0, 0, 1)),
@@ -630,11 +764,17 @@ fn mapped_computer_keys(keys: &[Key], computer_key: &ComputerKey) -> Vec<KeyId> 
         ComputerKey::Named(Named::Shift, ComputerKeyLocation::Left) => Some((4.0, 0, 1)),
         ComputerKey::Named(Named::Shift, ComputerKeyLocation::Right) => Some((4.0, 12, 14)),
         ComputerKey::Named(Named::Control, ComputerKeyLocation::Left) => Some((5.0, 0, 0)),
-        ComputerKey::Named(Named::Fn | Named::Meta | Named::Super, ComputerKeyLocation::Left) => Some((5.0, 1, 1)),
+        ComputerKey::Named(Named::Fn | Named::Meta | Named::Super, ComputerKeyLocation::Left) => {
+            Some((5.0, 1, 1))
+        }
         ComputerKey::Named(Named::Alt, ComputerKeyLocation::Left) => Some((5.0, 2, 2)),
         ComputerKey::Named(Named::Space, _) => Some((5.0, 3, 8)),
-        ComputerKey::Named(Named::Alt | Named::AltGraph, ComputerKeyLocation::Right) => Some((5.0, 9, 9)),
-        ComputerKey::Named(Named::Meta | Named::Super, ComputerKeyLocation::Right) => Some((5.0, 10, 10)),
+        ComputerKey::Named(Named::Alt | Named::AltGraph, ComputerKeyLocation::Right) => {
+            Some((5.0, 9, 9))
+        }
+        ComputerKey::Named(Named::Meta | Named::Super, ComputerKeyLocation::Right) => {
+            Some((5.0, 10, 10))
+        }
         ComputerKey::Named(Named::Control, ComputerKeyLocation::Right) => Some((5.0, 11, 11)),
         _ => None,
     };
@@ -655,7 +795,9 @@ fn mapped_computer_keys(keys: &[Key], computer_key: &ComputerKey) -> Vec<KeyId> 
         ComputerKey::Named(Named::ArrowDown, _) => cluster_key(keys, Cluster::Arrow, "↓"),
         ComputerKey::Named(Named::ArrowRight, _) => cluster_key(keys, Cluster::Arrow, "→"),
         ComputerKey::Named(Named::NumLock, _) => numpad_range(keys, &[0]),
-        ComputerKey::Named(Named::Enter, ComputerKeyLocation::Numpad) => numpad_range(keys, &[15, 19]),
+        ComputerKey::Named(Named::Enter, ComputerKeyLocation::Numpad) => {
+            numpad_range(keys, &[15, 19])
+        }
         ComputerKey::Character(character, ComputerKeyLocation::Numpad) => {
             match character.as_str() {
                 "/" => numpad_range(keys, &[1]),
@@ -688,22 +830,29 @@ fn computer_projection_labels(keys: &[Key]) -> HashMap<KeyId, String> {
         }
     };
 
-    for (index, label) in ["`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "⌫"]
-        .iter().enumerate()
+    for (index, label) in [
+        "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "⌫",
+    ]
+    .iter()
+    .enumerate()
     {
         label_range(1.0, index, index, label);
     }
 
     label_range(2.0, 0, 1, "TAB");
-    for (index, label) in ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\"]
-        .iter().enumerate()
+    for (index, label) in [
+        "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\",
+    ]
+    .iter()
+    .enumerate()
     {
         label_range(2.0, index + 2, index + 2, label);
     }
 
     label_range(3.0, 0, 0, "CAPS");
     for (index, label) in ["A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'"]
-        .iter().enumerate()
+        .iter()
+        .enumerate()
     {
         label_range(3.0, index + 1, index + 1, label);
     }
@@ -711,7 +860,8 @@ fn computer_projection_labels(keys: &[Key]) -> HashMap<KeyId, String> {
 
     label_range(4.0, 0, 1, "SHIFT");
     for (index, label) in ["Z", "X", "C", "V", "B", "N", "M", ",", ".", "/"]
-        .iter().enumerate()
+        .iter()
+        .enumerate()
     {
         label_range(4.0, index + 2, index + 2, label);
     }
@@ -727,6 +877,21 @@ fn computer_projection_labels(keys: &[Key]) -> HashMap<KeyId, String> {
         (11, 11, "CTRL"),
     ] {
         label_range(5.0, start, end, label);
+    }
+
+    // The physical numpad maps one computer key to each drum pad (with 0 and
+    // Enter each spanning two pads). These become unobtrusive corner hints
+    // when drum symbols and computer-key performance mode are both enabled.
+    let mut numpad: Vec<&Key> = keys
+        .iter()
+        .filter(|key| key.cluster == Cluster::Numpad)
+        .collect();
+    numpad.sort_by(|a, b| a.row.total_cmp(&b.row).then(a.col.total_cmp(&b.col)));
+    for (key, label) in numpad.into_iter().zip([
+        "NUM", "/", "*", "−", "7", "8", "9", "+", "4", "5", "6", "+", "1", "2", "3", "ENTER", "0",
+        "0", ".", "ENTER",
+    ]) {
+        labels.insert(key.id, label.to_string());
     }
 
     labels
@@ -747,8 +912,11 @@ fn pick_key_nearest(
         _ if placed.is_empty() => kids.last().copied(),
         _ => kids.iter().copied().min_by(|&a, &b| {
             let dist_to_nearest_placed = |k: KeyId| -> f32 {
-                let Some(&(c, r)) = key_pos.get(&k) else { return f32::MAX };
-                placed.keys()
+                let Some(&(c, r)) = key_pos.get(&k) else {
+                    return f32::MAX;
+                };
+                placed
+                    .keys()
                     .filter_map(|p| key_pos.get(p))
                     .map(|&(pc, pr)| (c - pc).powi(2) + (r - pr).powi(2))
                     .fold(f32::MAX, f32::min)
@@ -764,10 +932,7 @@ fn pick_key_nearest(
 /// minimizes *total* travel distance across the whole sequence — a Viterbi-style
 /// dynamic program, not a note-by-note greedy guess. `stages` must be non-empty
 /// and every inner Vec must be non-empty.
-fn shortest_path_keys(
-    stages: &[Vec<KeyId>],
-    key_pos: &HashMap<KeyId, (f32, f32)>,
-) -> Vec<KeyId> {
+fn shortest_path_keys(stages: &[Vec<KeyId>], key_pos: &HashMap<KeyId, (f32, f32)>) -> Vec<KeyId> {
     let dist = |a: KeyId, b: KeyId| -> f32 {
         match (key_pos.get(&a), key_pos.get(&b)) {
             (Some(&(c1, r1)), Some(&(c2, r2))) => ((c1 - c2).powi(2) + (r1 - r2).powi(2)).sqrt(),
@@ -778,12 +943,17 @@ fn shortest_path_keys(
     // dp[i][k] = (cheapest total cost to reach stages[i][k], index into stages[i-1] that got us there)
     let mut dp: Vec<Vec<(f32, usize)>> = vec![vec![(0.0, 0); stages[0].len()]];
     for i in 1..stages.len() {
-        let row = stages[i].iter().map(|&cand| {
-            stages[i - 1].iter().enumerate()
-                .map(|(j, &prev)| (dp[i - 1][j].0 + dist(prev, cand), j))
-                .min_by(|a, b| a.0.total_cmp(&b.0))
-                .unwrap()
-        }).collect();
+        let row = stages[i]
+            .iter()
+            .map(|&cand| {
+                stages[i - 1]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &prev)| (dp[i - 1][j].0 + dist(prev, cand), j))
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .unwrap()
+            })
+            .collect();
         dp.push(row);
     }
 
@@ -804,9 +974,7 @@ fn shortest_path_keys(
 /// human-friendly, one-based play steps. Equal ticks deliberately receive the
 /// same number because those keys form a chord; a key used again later keeps
 /// every step number so repeated notes are not lost in the highlight map.
-fn play_order_from_ticks(
-    mut ticks_by_key: HashMap<KeyId, Vec<u64>>,
-) -> HashMap<KeyId, Vec<usize>> {
+fn play_order_from_ticks(mut ticks_by_key: HashMap<KeyId, Vec<u64>>) -> HashMap<KeyId, Vec<usize>> {
     let mut ticks: Vec<u64> = ticks_by_key.values().flatten().copied().collect();
     ticks.sort_unstable();
     ticks.dedup();
@@ -855,10 +1023,7 @@ fn parse_midi_input(data: &[u8]) -> Option<MidiInputAction> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn next_web_midi_port(
-    current: Option<&str>,
-    ports: &[playback::MidiPortInfo],
-) -> Option<String> {
+fn next_web_midi_port(current: Option<&str>, ports: &[playback::MidiPortInfo]) -> Option<String> {
     match current.and_then(|id| ports.iter().position(|port| port.id == id)) {
         Some(index) if index + 1 < ports.len() => Some(ports[index + 1].id.clone()),
         Some(_) => None,
@@ -893,18 +1058,32 @@ impl App {
 
     #[cfg(target_arch = "wasm32")]
     fn refresh_web_midi_ports(&mut self, auto_select: bool) {
-        let Some(access) = self.web_midi_access.as_ref() else { return };
+        let Some(access) = self.web_midi_access.as_ref() else {
+            return;
+        };
         let inputs = access.input_ports();
         let outputs = access.output_ports();
 
-        let input_id = self.web_midi_input_id.as_deref()
+        let input_id = self
+            .web_midi_input_id
+            .as_deref()
             .filter(|id| inputs.iter().any(|port| port.id == *id))
             .map(str::to_string)
-            .or_else(|| auto_select.then(|| inputs.first().map(|port| port.id.clone())).flatten());
-        let output_id = self.web_midi_output_id.as_deref()
+            .or_else(|| {
+                auto_select
+                    .then(|| inputs.first().map(|port| port.id.clone()))
+                    .flatten()
+            });
+        let output_id = self
+            .web_midi_output_id
+            .as_deref()
             .filter(|id| outputs.iter().any(|port| port.id == *id))
             .map(str::to_string)
-            .or_else(|| auto_select.then(|| outputs.first().map(|port| port.id.clone())).flatten());
+            .or_else(|| {
+                auto_select
+                    .then(|| outputs.first().map(|port| port.id.clone()))
+                    .flatten()
+            });
 
         let reconnect_input = input_id != self.web_midi_input_id
             || (input_id.is_some() && self.web_midi_input.is_none());
@@ -922,13 +1101,25 @@ impl App {
 
         if self.web_midi_inputs.is_empty() && self.web_midi_outputs.is_empty() {
             self.web_midi_status = Some("MIDI access granted — no devices found".to_string());
-        } else if self.web_midi_status.as_deref().is_none_or(|s| !s.starts_with("MIDI error:")) {
+        } else if self
+            .web_midi_status
+            .as_deref()
+            .is_none_or(|s| !s.starts_with("MIDI error:"))
+        {
             self.web_midi_status = Some(format!(
                 "MIDI connected · {} input{} · {} output{}",
                 self.web_midi_inputs.len(),
-                if self.web_midi_inputs.len() == 1 { "" } else { "s" },
+                if self.web_midi_inputs.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
                 self.web_midi_outputs.len(),
-                if self.web_midi_outputs.len() == 1 { "" } else { "s" },
+                if self.web_midi_outputs.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                },
             ));
         }
     }
@@ -939,7 +1130,9 @@ impl App {
         self.web_midi_input = None;
         self.web_midi_input_id = id.clone();
         let Some(id) = id else { return };
-        let Some(access) = self.web_midi_access.as_ref() else { return };
+        let Some(access) = self.web_midi_access.as_ref() else {
+            return;
+        };
         match access.connect_input(&id, Arc::clone(&self.web_midi_events)) {
             Ok(connection) => self.web_midi_input = Some(connection),
             Err(error) => {
@@ -956,25 +1149,28 @@ impl App {
         }
         self.web_midi_output_id = id.clone();
         self.web_midi_output = id.as_deref().and_then(|id| {
-            self.web_midi_access.as_ref().and_then(|access| {
-                match access.connect_output(id) {
+            self.web_midi_access
+                .as_ref()
+                .and_then(|access| match access.connect_output(id) {
                     Ok(output) => Some(output),
                     Err(error) => {
                         self.web_midi_status = Some(format!("MIDI error: {error}"));
                         None
                     }
-                }
-            })
+                })
         });
         if self.web_midi_output.is_none() && id.is_some() {
             self.web_midi_output_id = None;
         }
 
         if let Some(ref synth) = self.soft_synth {
-            if let Ok(mut synth) = synth.lock() { synth.all_notes_off(); }
+            if let Ok(mut synth) = synth.lock() {
+                synth.all_notes_off();
+            }
         }
         if let Some(ref handle) = self.playback_handle {
-            handle.cmd_tx
+            handle
+                .cmd_tx
                 .send(PlayCmd::SetMidiOutput(self.web_midi_output.clone()))
                 .ok();
         }
@@ -983,7 +1179,11 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn web_midi_key_for_note(&self, note: u8, channel: u8) -> Option<(KeyId, bool)> {
         if channel == synth::DRUM_CHANNEL {
-            return self.drum_note_to_key.get(&note).copied().map(|key| (key, false));
+            return self
+                .drum_note_to_key
+                .get(&note)
+                .copied()
+                .map(|key| (key, false));
         }
         if let Some(keys) = self.note_to_all_keys.get(&note) {
             let key = if self.key_pick_mode == KeyPickMode::Closest {
@@ -1006,27 +1206,38 @@ impl App {
     #[cfg(target_arch = "wasm32")]
     fn handle_web_midi_input(&mut self, action: MidiInputAction) {
         match action {
-            MidiInputAction::NoteOn { note, velocity, channel } => {
-                if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+            MidiInputAction::NoteOn {
+                note,
+                velocity,
+                channel,
+            } => {
+                if self
+                    .audio_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
                     if let Some(ref synth) = self.soft_synth {
-                        if let Ok(mut synth) = synth.lock() { synth.note_on(note, velocity, channel); }
+                        if let Ok(mut synth) = synth.lock() {
+                            synth.note_on(note, velocity, channel);
+                        }
                     }
                 }
                 if let Some((key, warning)) = self.web_midi_key_for_note(note, channel) {
                     if let Some(old_key) = self.web_midi_active_notes.insert((channel, note), key) {
-                        if old_key != key && !self.web_midi_active_notes.values().any(|&id| id == old_key) {
+                        if old_key != key
+                            && !self.web_midi_active_notes.values().any(|&id| id == old_key)
+                        {
                             self.web_midi_highlighted.remove(&old_key);
                         }
                     }
-                    self.web_midi_highlighted.insert(
-                        key,
-                        if warning { usize::MAX - 1 } else { usize::MAX },
-                    );
+                    self.web_midi_highlighted
+                        .insert(key, if warning { usize::MAX - 1 } else { usize::MAX });
                 }
             }
             MidiInputAction::NoteOff { note, channel } => {
                 if let Some(ref synth) = self.soft_synth {
-                    if let Ok(mut synth) = synth.lock() { synth.note_off(note, channel); }
+                    if let Ok(mut synth) = synth.lock() {
+                        synth.note_off(note, channel);
+                    }
                 }
                 if let Some(key) = self.web_midi_active_notes.remove(&(channel, note)) {
                     if !self.web_midi_active_notes.values().any(|&id| id == key) {
@@ -1034,18 +1245,25 @@ impl App {
                     }
                 }
             }
-            MidiInputAction::AllNotesOff { channel } => self.release_web_midi_input_notes(Some(channel)),
+            MidiInputAction::AllNotesOff { channel } => {
+                self.release_web_midi_input_notes(Some(channel))
+            }
         }
     }
 
     #[cfg(target_arch = "wasm32")]
     fn release_web_midi_input_notes(&mut self, channel: Option<u8>) {
-        let notes: Vec<(u8, u8)> = self.web_midi_active_notes.keys().copied()
+        let notes: Vec<(u8, u8)> = self
+            .web_midi_active_notes
+            .keys()
+            .copied()
             .filter(|(active_channel, _)| channel.is_none_or(|channel| *active_channel == channel))
             .collect();
         for (active_channel, note) in notes {
             if let Some(ref synth) = self.soft_synth {
-                if let Ok(mut synth) = synth.lock() { synth.note_off(note, active_channel); }
+                if let Ok(mut synth) = synth.lock() {
+                    synth.note_off(note, active_channel);
+                }
             }
             if let Some(key) = self.web_midi_active_notes.remove(&(active_channel, note)) {
                 if !self.web_midi_active_notes.values().any(|&id| id == key) {
@@ -1054,7 +1272,10 @@ impl App {
             }
         }
         if channel.is_none() {
-            self.web_midi_events.lock().map(|mut queue| queue.clear()).ok();
+            self.web_midi_events
+                .lock()
+                .map(|mut queue| queue.clear())
+                .ok();
         }
     }
 
@@ -1070,23 +1291,34 @@ impl App {
     /// producing the wrong jumps.
     fn rebuild_closest_key_map(&mut self) {
         self.closest_key_for_note.clear();
-        if self.key_pick_mode != KeyPickMode::Closest { return; }
+        if self.key_pick_mode != KeyPickMode::Closest {
+            return;
+        }
         let Some(ref f) = self.midi_file else { return };
 
         let mut shifted_notes: Vec<u8> = Vec::new();
         let mut stages: Vec<Vec<KeyId>> = Vec::new();
         for note in &f.notes {
-            if self.track_muted.get(note.track).copied().unwrap_or(false) { continue; }
-            if note.channel == synth::DRUM_CHANNEL { continue; }
+            if self.track_muted.get(note.track).copied().unwrap_or(false) {
+                continue;
+            }
+            if note.channel == synth::DRUM_CHANNEL {
+                continue;
+            }
             let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
             if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                 shifted_notes.push(shifted);
                 stages.push(kids.clone());
             }
         }
-        if stages.is_empty() { return; }
+        if stages.is_empty() {
+            return;
+        }
 
-        for (shifted, kid) in shifted_notes.into_iter().zip(shortest_path_keys(&stages, &self.key_pos)) {
+        for (shifted, kid) in shifted_notes
+            .into_iter()
+            .zip(shortest_path_keys(&stages, &self.key_pos))
+        {
             self.closest_key_for_note.insert(shifted, kid);
         }
     }
@@ -1097,7 +1329,9 @@ impl App {
 
         if self.key_pick_mode == KeyPickMode::Closest {
             for note in &f.notes {
-                if self.track_muted.get(note.track).copied().unwrap_or(false) { continue; }
+                if self.track_muted.get(note.track).copied().unwrap_or(false) {
+                    continue;
+                }
 
                 if note.channel == synth::DRUM_CHANNEL {
                     if let Some(&kid) = self.drum_note_to_key.get(&note.midi_note) {
@@ -1106,7 +1340,8 @@ impl App {
                     continue;
                 }
 
-                let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+                let shifted =
+                    (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
                 if let Some(&kid) = self.closest_key_for_note.get(&shifted) {
                     self.all_notes_cache.insert(kid, note.track);
                 }
@@ -1115,7 +1350,9 @@ impl App {
             // In-range notes (track color). Drum-channel notes go straight to
             // their dedicated pad — no octave shift, no nearest-key fallback.
             for note in &f.notes {
-                if self.track_muted.get(note.track).copied().unwrap_or(false) { continue; }
+                if self.track_muted.get(note.track).copied().unwrap_or(false) {
+                    continue;
+                }
 
                 if note.channel == synth::DRUM_CHANNEL {
                     if let Some(&kid) = self.drum_note_to_key.get(&note.midi_note) {
@@ -1124,7 +1361,8 @@ impl App {
                     continue;
                 }
 
-                let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+                let shifted =
+                    (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
                 if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                     if let Some(kid) = pick_key_fixed(kids, self.key_pick_mode) {
                         self.all_notes_cache.insert(kid, note.track);
@@ -1136,10 +1374,16 @@ impl App {
         // Out-of-range melodic notes — highlight the nearest keyboard key with the
         // warning sentinel (usize::MAX - 1) only if that key isn't already lit.
         for note in &f.notes {
-            if self.track_muted.get(note.track).copied().unwrap_or(false) { continue; }
-            if note.channel == synth::DRUM_CHANNEL { continue; }
+            if self.track_muted.get(note.track).copied().unwrap_or(false) {
+                continue;
+            }
+            if note.channel == synth::DRUM_CHANNEL {
+                continue;
+            }
             let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
-            if self.note_to_all_keys.contains_key(&shifted) { continue; }
+            if self.note_to_all_keys.contains_key(&shifted) {
+                continue;
+            }
             if let Some(nearest) = self.nearest_keyboard_note(shifted) {
                 if let Some(kids) = self.note_to_all_keys.get(&nearest) {
                     let kid = if self.key_pick_mode == KeyPickMode::Closest {
@@ -1162,15 +1406,21 @@ impl App {
         self.selection_highlight_cache.clear();
         self.selection_play_order.clear();
         let Some(ref f) = self.midi_file else { return };
-        let Some((s, e)) = self.staff_selection else { return };
+        let Some((s, e)) = self.staff_selection else {
+            return;
+        };
         let e = e.max(s + 1);
         let in_range = |note: &midi::Note| note.start_tick < e && note.end_tick > s;
         let mut play_ticks: HashMap<KeyId, Vec<u64>> = HashMap::new();
 
         if self.key_pick_mode == KeyPickMode::Closest {
             for note in &f.notes {
-                if self.track_muted.get(note.track).copied().unwrap_or(false) { continue; }
-                if !in_range(note) { continue; }
+                if self.track_muted.get(note.track).copied().unwrap_or(false) {
+                    continue;
+                }
+                if !in_range(note) {
+                    continue;
+                }
 
                 if note.channel == synth::DRUM_CHANNEL {
                     if let Some(&kid) = self.drum_note_to_key.get(&note.midi_note) {
@@ -1180,7 +1430,8 @@ impl App {
                     continue;
                 }
 
-                let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+                let shifted =
+                    (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
                 if let Some(&kid) = self.closest_key_for_note.get(&shifted) {
                     self.selection_highlight_cache.insert(kid, note.track);
                     play_ticks.entry(kid).or_default().push(note.start_tick);
@@ -1188,8 +1439,12 @@ impl App {
             }
         } else {
             for note in &f.notes {
-                if self.track_muted.get(note.track).copied().unwrap_or(false) { continue; }
-                if !in_range(note) { continue; }
+                if self.track_muted.get(note.track).copied().unwrap_or(false) {
+                    continue;
+                }
+                if !in_range(note) {
+                    continue;
+                }
 
                 if note.channel == synth::DRUM_CHANNEL {
                     if let Some(&kid) = self.drum_note_to_key.get(&note.midi_note) {
@@ -1199,7 +1454,8 @@ impl App {
                     continue;
                 }
 
-                let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
+                let shifted =
+                    (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
                 if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                     if let Some(kid) = pick_key_fixed(kids, self.key_pick_mode) {
                         self.selection_highlight_cache.insert(kid, note.track);
@@ -1212,11 +1468,19 @@ impl App {
         // Out-of-range melodic notes within the selection — same nearest-keyboard
         // fallback as rebuild_all_notes_cache.
         for note in &f.notes {
-            if self.track_muted.get(note.track).copied().unwrap_or(false) { continue; }
-            if !in_range(note) { continue; }
-            if note.channel == synth::DRUM_CHANNEL { continue; }
+            if self.track_muted.get(note.track).copied().unwrap_or(false) {
+                continue;
+            }
+            if !in_range(note) {
+                continue;
+            }
+            if note.channel == synth::DRUM_CHANNEL {
+                continue;
+            }
             let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
-            if self.note_to_all_keys.contains_key(&shifted) { continue; }
+            if self.note_to_all_keys.contains_key(&shifted) {
+                continue;
+            }
             if let Some(nearest) = self.nearest_keyboard_note(shifted) {
                 if let Some(kids) = self.note_to_all_keys.get(&nearest) {
                     let kid = if self.key_pick_mode == KeyPickMode::Closest {
@@ -1225,7 +1489,9 @@ impl App {
                         pick_key_fixed(kids, self.key_pick_mode)
                     };
                     if let Some(kid) = kid {
-                        self.selection_highlight_cache.entry(kid).or_insert(usize::MAX - 1);
+                        self.selection_highlight_cache
+                            .entry(kid)
+                            .or_insert(usize::MAX - 1);
                         play_ticks.entry(kid).or_default().push(note.start_tick);
                     }
                 }
@@ -1239,14 +1505,17 @@ impl App {
     /// notes actually land on the physical keyboard and skip audio for the rest.
     fn sync_octave_offset(&self) {
         if let Some(ref h) = self.playback_handle {
-            h.cmd_tx.send(PlayCmd::SetOctaveOffset(self.octave_offset)).ok();
+            h.cmd_tx
+                .send(PlayCmd::SetOctaveOffset(self.octave_offset))
+                .ok();
         }
     }
 
     /// The waveforms currently layered together, derived from whichever
     /// Nav waveform-select keys are toggled on.
     fn active_waveforms(&self) -> Vec<synth::Waveform> {
-        self.keys.iter()
+        self.keys
+            .iter()
             .filter(|key| self.waveform_keys.contains(&key.id))
             .filter_map(|key| waveform_for_label(key.label))
             .collect()
@@ -1255,11 +1524,29 @@ impl App {
     fn sync_active_waveforms(&self) {
         let waveforms = self.active_waveforms();
         if let Some(ref synth) = self.soft_synth {
-            if let Ok(mut synth) = synth.lock() { synth.set_active_waveforms(waveforms.clone()); }
+            if let Ok(mut synth) = synth.lock() {
+                synth.set_active_waveforms(waveforms.clone());
+            }
         }
         if let Some(ref h) = self.playback_handle {
             h.cmd_tx.send(PlayCmd::SetWaveforms(waveforms)).ok();
         }
+    }
+
+    /// Pushes the current loop range to the playback thread: the staff
+    /// selection when one is active, the whole file otherwise, or `None`
+    /// when looping is off. Called whenever looping is toggled or the
+    /// selection changes, so the active loop always tracks what's selected.
+    fn sync_loop_range(&self) {
+        let Some(ref h) = self.playback_handle else { return };
+        let range = self.looper_enabled
+            .then(|| {
+                self.staff_selection
+                    .map(|(s, e)| (s, e.max(s + 1)))
+                    .or_else(|| self.midi_file.as_ref().map(|f| (0, f.total_ticks)))
+            })
+            .flatten();
+        h.cmd_tx.send(PlayCmd::SetLoopRange(range)).ok();
     }
 
     /// Pushes every App-level audio setting (waveforms, knobs) directly into
@@ -1273,7 +1560,12 @@ impl App {
         if let Some(ref synth) = self.soft_synth {
             if let Ok(mut synth) = synth.lock() {
                 for (i, param) in synth::KNOB_PARAMS.iter().enumerate() {
-                    let pos = self.knob_values.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                    let pos = self
+                        .knob_values
+                        .get(i)
+                        .copied()
+                        .unwrap_or(0.0)
+                        .clamp(0.0, 1.0);
                     let real = param.min + pos * (param.max - param.min);
                     synth.set_knob(i as u8, real);
                 }
@@ -1282,20 +1574,25 @@ impl App {
     }
 
     fn key_sound(&self, id: KeyId) -> Option<(u8, u8)> {
-        if let Some(note) = self.keys.iter()
+        if let Some(note) = self
+            .keys
+            .iter()
             .find(|key| key.id == id)
             .and_then(|key| key.midi_note)
         {
-            return Some((note, 0));
+            return Some((note, self.live_channel));
         }
 
-        self.drum_note_to_key.iter()
+        self.drum_note_to_key
+            .iter()
             .find_map(|(&note, &key_id)| (key_id == id).then_some((note, synth::DRUM_CHANNEL)))
     }
 
     fn press_board_key(&mut self, id: KeyId) {
         self.pressed_keys.insert(id);
-        let is_waveform_key = self.keys.iter()
+        let is_waveform_key = self
+            .keys
+            .iter()
             .find(|key| key.id == id && key.cluster == Cluster::Nav)
             .is_some_and(|key| waveform_for_label(key.label).is_some());
 
@@ -1315,9 +1612,14 @@ impl App {
                 (note as i16 + self.live_octave as i16).clamp(0, 127) as u8
             };
             self.live_note_overrides.insert(id, (shifted, channel));
-            if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+            if self
+                .audio_enabled
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 if let Some(ref h) = self.playback_handle {
-                    h.cmd_tx.send(PlayCmd::LiveNoteOn(shifted, 108, channel)).ok();
+                    h.cmd_tx
+                        .send(PlayCmd::LiveNoteOn(shifted, 108, channel))
+                        .ok();
                 } else {
                     #[cfg(target_arch = "wasm32")]
                     if let Some(ref output) = self.web_midi_output {
@@ -1325,7 +1627,9 @@ impl App {
                         return;
                     }
                     if let Some(ref synth) = self.soft_synth {
-                        if let Ok(mut synth) = synth.lock() { synth.note_on(shifted, 108, channel); }
+                        if let Ok(mut synth) = synth.lock() {
+                            synth.note_on(shifted, 108, channel);
+                        }
                     }
                 }
             }
@@ -1347,14 +1651,17 @@ impl App {
                     return;
                 }
                 if let Some(ref synth) = self.soft_synth {
-                    if let Ok(mut synth) = synth.lock() { synth.note_off(note, channel); }
+                    if let Ok(mut synth) = synth.lock() {
+                        synth.note_off(note, channel);
+                    }
                 }
             }
         }
     }
 
     fn release_computer_keys(&mut self) {
-        let keys: Vec<KeyId> = self.computer_keys_down
+        let keys: Vec<KeyId> = self
+            .computer_keys_down
             .drain()
             .flat_map(|(_, keys)| keys)
             .collect();
@@ -1365,7 +1672,9 @@ impl App {
 
     fn nearest_keyboard_note(&self, note: u8) -> Option<u8> {
         let s = &self.keyboard_notes_sorted;
-        if s.is_empty() { return None; }
+        if s.is_empty() {
+            return None;
+        }
         let pos = s.partition_point(|&n| n < note);
         Some(if pos == 0 {
             s[0]
@@ -1374,7 +1683,11 @@ impl App {
         } else {
             let below = s[pos - 1];
             let above = s[pos];
-            if note - below <= above - note { below } else { above }
+            if note - below <= above - note {
+                below
+            } else {
+                above
+            }
         })
     }
 
@@ -1406,7 +1719,9 @@ impl App {
                 if let Some(param) = synth::KNOB_PARAMS.get(index as usize) {
                     let value = param.min + pos * (param.max - param.min);
                     if let Some(ref synth) = self.soft_synth {
-                        if let Ok(mut synth) = synth.lock() { synth.set_knob(index, value); }
+                        if let Ok(mut synth) = synth.lock() {
+                            synth.set_knob(index, value);
+                        }
                     }
                     if let Some(ref h) = self.playback_handle {
                         h.cmd_tx.send(PlayCmd::SetKnob(index, value)).ok();
@@ -1421,6 +1736,12 @@ impl App {
                     self.release_computer_keys();
                 }
                 self.keyboard_hits_enabled = !self.keyboard_hits_enabled;
+                self.sync_url();
+                Task::none()
+            }
+
+            Message::ToggleDrumSymbols => {
+                self.drum_symbols_enabled = !self.drum_symbols_enabled;
                 self.sync_url();
                 Task::none()
             }
@@ -1472,10 +1793,9 @@ impl App {
             }
 
             Message::FileChosen(None) => Task::none(),
-            Message::FileChosen(Some(bytes)) => Task::perform(
-                async move { midi::load_bytes(&bytes) },
-                Message::MidiLoaded,
-            ),
+            Message::FileChosen(Some(bytes)) => {
+                Task::perform(async move { midi::load_bytes(&bytes) }, Message::MidiLoaded)
+            }
 
             Message::MidiLoaded(Err(e)) => {
                 self.load_error = Some(e);
@@ -1484,12 +1804,13 @@ impl App {
             Message::MidiLoaded(Ok(file)) => {
                 let (offset, covered, total) =
                     midi::best_octave_offset(&file, &self.keyboard_notes);
-                self.skipped_notes  = total.saturating_sub(covered);
-                self.octave_offset  = offset;
-                self.track_muted    = vec![false; file.tracks.len()];
-                self.load_error     = None;
-                self.play_state     = PlayState::Stopped;
-                self.position_tick  = 0;
+                self.skipped_notes = total.saturating_sub(covered);
+                self.octave_offset = offset;
+                self.track_muted = vec![false; file.tracks.len()];
+                self.track_channel = file.tracks.iter().map(|t| t.channel.unwrap_or(0)).collect();
+                self.load_error = None;
+                self.play_state = PlayState::Stopped;
+                self.position_tick = 0;
                 self.highlighted.clear();
                 self.staff_selection = None;
                 self.selection_highlight_cache.clear();
@@ -1508,6 +1829,7 @@ impl App {
                     Arc::clone(&self.playback_events),
                     Arc::clone(&self.audio_enabled),
                     self.track_muted.clone(),
+                    self.track_channel.clone(),
                     conn,
                     Arc::new(self.keyboard_notes.clone()),
                     self.octave_offset,
@@ -1516,6 +1838,7 @@ impl App {
                 );
                 self.playback_handle = Some(handle);
                 self.midi_file = Some(file);
+                self.sync_loop_range();
                 self.rebuild_closest_key_map();
                 self.rebuild_all_notes_cache();
                 Task::none()
@@ -1526,16 +1849,24 @@ impl App {
                 self.octave_offset = self.octave_offset.saturating_add(self.pitch_step);
                 self.sync_octave_offset();
                 self.rebuild_closest_key_map();
-                if self.show_all_notes { self.rebuild_all_notes_cache(); }
-                if self.staff_selection.is_some() { self.rebuild_selection_highlight(); }
+                if self.show_all_notes {
+                    self.rebuild_all_notes_cache();
+                }
+                if self.staff_selection.is_some() {
+                    self.rebuild_selection_highlight();
+                }
                 Task::none()
             }
             Message::PitchDown => {
                 self.octave_offset = self.octave_offset.saturating_sub(self.pitch_step);
                 self.sync_octave_offset();
                 self.rebuild_closest_key_map();
-                if self.show_all_notes { self.rebuild_all_notes_cache(); }
-                if self.staff_selection.is_some() { self.rebuild_selection_highlight(); }
+                if self.show_all_notes {
+                    self.rebuild_all_notes_cache();
+                }
+                if self.staff_selection.is_some() {
+                    self.rebuild_selection_highlight();
+                }
                 Task::none()
             }
             Message::LiveOctaveUp => {
@@ -1556,16 +1887,24 @@ impl App {
                 self.octave_offset = 0;
                 self.sync_octave_offset();
                 self.rebuild_closest_key_map();
-                if self.show_all_notes { self.rebuild_all_notes_cache(); }
-                if self.staff_selection.is_some() { self.rebuild_selection_highlight(); }
+                if self.show_all_notes {
+                    self.rebuild_all_notes_cache();
+                }
+                if self.staff_selection.is_some() {
+                    self.rebuild_selection_highlight();
+                }
                 Task::none()
             }
             Message::OctaveLayoutToggle => {
                 self.key_pick_mode = self.key_pick_mode.next();
                 self.highlighted.clear();
                 self.rebuild_closest_key_map();
-                if self.show_all_notes { self.rebuild_all_notes_cache(); }
-                if self.staff_selection.is_some() { self.rebuild_selection_highlight(); }
+                if self.show_all_notes {
+                    self.rebuild_all_notes_cache();
+                }
+                if self.staff_selection.is_some() {
+                    self.rebuild_selection_highlight();
+                }
                 self.sync_url();
                 Task::none()
             }
@@ -1581,13 +1920,28 @@ impl App {
 
             // ── Tracks ─────────────────────────────────────────────────────
             Message::TrackMuted(idx, muted) => {
-                if let Some(s) = self.track_muted.get_mut(idx) { *s = muted; }
+                if let Some(s) = self.track_muted.get_mut(idx) {
+                    *s = muted;
+                }
                 if let Some(ref h) = self.playback_handle {
                     h.cmd_tx.send(PlayCmd::SetTrackMuted(idx, muted)).ok();
                 }
                 self.rebuild_closest_key_map();
-                if self.show_all_notes { self.rebuild_all_notes_cache(); }
-                if self.staff_selection.is_some() { self.rebuild_selection_highlight(); }
+                if self.show_all_notes {
+                    self.rebuild_all_notes_cache();
+                }
+                if self.staff_selection.is_some() {
+                    self.rebuild_selection_highlight();
+                }
+                Task::none()
+            }
+            Message::TrackChannel(idx, channel) => {
+                if let Some(s) = self.track_channel.get_mut(idx) {
+                    *s = channel;
+                }
+                if let Some(ref h) = self.playback_handle {
+                    h.cmd_tx.send(PlayCmd::SetTrackChannel(idx, channel)).ok();
+                }
                 Task::none()
             }
 
@@ -1610,9 +1964,15 @@ impl App {
                 if let Some(ref h) = self.playback_handle {
                     h.cmd_tx.send(PlayCmd::Stop).ok();
                 }
-                self.play_state    = PlayState::Stopped;
+                self.play_state = PlayState::Stopped;
                 self.position_tick = 0;
                 self.highlighted.clear();
+                Task::none()
+            }
+            Message::ToggleLooper => {
+                self.looper_enabled = !self.looper_enabled;
+                self.sync_loop_range();
+                self.sync_url();
                 Task::none()
             }
             Message::SeekTo(progress) => {
@@ -1651,8 +2011,8 @@ impl App {
                                     }
                                     continue;
                                 }
-                                let shifted = (note as i16 + self.octave_offset as i16)
-                                    .clamp(0, 127) as u8;
+                                let shifted =
+                                    (note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
                                 // Closest mode reads the whole-file precomputed answer
                                 // (rebuild_closest_key_map) so live playback always agrees
                                 // with the selection/all-notes views instead of re-deciding
@@ -1677,8 +2037,8 @@ impl App {
                                     }
                                     continue;
                                 }
-                                let shifted = (note as i16 + self.octave_offset as i16)
-                                    .clamp(0, 127) as u8;
+                                let shifted =
+                                    (note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
                                 if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                                     for &kid in kids {
                                         self.highlighted.remove(&kid);
@@ -1690,21 +2050,37 @@ impl App {
                             self.position_tick = t;
                         }
                         PlayEvent::Done => {
-                            self.play_state = PlayState::Stopped;
                             self.position_tick = 0;
                             self.highlighted.clear();
+                            let can_loop = self.looper_enabled
+                                && self
+                                    .midi_file
+                                    .as_ref()
+                                    .is_some_and(|file| file.total_ticks > 0);
+                            if can_loop {
+                                if let Some(ref handle) = self.playback_handle {
+                                    handle.cmd_tx.send(PlayCmd::Play).ok();
+                                }
+                                self.play_state = PlayState::Playing;
+                            } else {
+                                self.play_state = PlayState::Stopped;
+                            }
                         }
                     }
                 }
 
                 #[cfg(target_arch = "wasm32")]
                 {
-                    let ports_changed = self.web_midi_access.as_ref()
+                    let ports_changed = self
+                        .web_midi_access
+                        .as_ref()
                         .is_some_and(playback::MidiAccessHandle::take_ports_changed);
                     if ports_changed {
                         self.refresh_web_midi_ports(false);
                     }
-                    let midi_messages: Vec<Vec<u8>> = self.web_midi_events.lock()
+                    let midi_messages: Vec<Vec<u8>> = self
+                        .web_midi_events
+                        .lock()
                         .map(|mut queue| queue.drain(..).collect())
                         .unwrap_or_default();
                     for data in midi_messages {
@@ -1718,7 +2094,9 @@ impl App {
 
             // ── Audio toggle ───────────────────────────────────────────────
             Message::ToggleAudio => {
-                let was = self.audio_enabled.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+                let was = self
+                    .audio_enabled
+                    .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
                 if let Some(ref h) = self.playback_handle {
                     h.cmd_tx.send(PlayCmd::SetAudio(!was)).ok();
                 } else if was {
@@ -1727,7 +2105,9 @@ impl App {
                         output.all_notes_off();
                     }
                     if let Some(ref synth) = self.soft_synth {
-                        if let Ok(mut synth) = synth.lock() { synth.all_notes_off(); }
+                        if let Ok(mut synth) = synth.lock() {
+                            synth.all_notes_off();
+                        }
                     }
                 }
                 self.sync_url();
@@ -1739,6 +2119,11 @@ impl App {
                 if !self.midi_port_names.is_empty() {
                     self.midi_port_idx = (self.midi_port_idx + 1) % self.midi_port_names.len();
                 }
+                Task::none()
+            }
+
+            Message::LiveChannel(channel) => {
+                self.live_channel = channel;
                 Task::none()
             }
 
@@ -1778,20 +2163,16 @@ impl App {
 
             #[cfg(target_arch = "wasm32")]
             Message::NextWebMidiInput => {
-                let id = next_web_midi_port(
-                    self.web_midi_input_id.as_deref(),
-                    &self.web_midi_inputs,
-                );
+                let id =
+                    next_web_midi_port(self.web_midi_input_id.as_deref(), &self.web_midi_inputs);
                 self.select_web_midi_input(id);
                 Task::none()
             }
 
             #[cfg(target_arch = "wasm32")]
             Message::NextWebMidiOutput => {
-                let id = next_web_midi_port(
-                    self.web_midi_output_id.as_deref(),
-                    &self.web_midi_outputs,
-                );
+                let id =
+                    next_web_midi_port(self.web_midi_output_id.as_deref(), &self.web_midi_outputs);
                 self.select_web_midi_output(id);
                 Task::none()
             }
@@ -1800,6 +2181,7 @@ impl App {
             Message::StaffSelectionChanged(sel) => {
                 self.staff_selection = sel;
                 self.rebuild_selection_highlight();
+                self.sync_loop_range();
                 Task::none()
             }
         }
@@ -1811,7 +2193,9 @@ impl App {
         let (s, e) = self.staff_selection?;
         let e = e.max(s + 1); // a zero-width selection still catches notes at that instant
 
-        let mut notes: Vec<&midi::Note> = f.notes.iter()
+        let mut notes: Vec<&midi::Note> = f
+            .notes
+            .iter()
             .filter(|n| n.start_tick < e && n.end_tick > s)
             .filter(|n| !self.track_muted.get(n.track).copied().unwrap_or(false))
             .collect();
@@ -1831,10 +2215,17 @@ impl App {
             }
         }
 
-        let track_strs: Vec<String> = by_track.iter().map(|(t, names)| {
-            let tname = f.tracks.get(*t).and_then(|ti| ti.name.as_deref()).unwrap_or("Track");
-            format!("T{} {}: {}", t + 1, tname, names.join(", "))
-        }).collect();
+        let track_strs: Vec<String> = by_track
+            .iter()
+            .map(|(t, names)| {
+                let tname = f
+                    .tracks
+                    .get(*t)
+                    .and_then(|ti| ti.name.as_deref())
+                    .unwrap_or("Track");
+                format!("T{} {}: {}", t + 1, tname, names.join(", "))
+            })
+            .collect();
 
         Some(format!(
             "{} note{} · {}",
@@ -1850,13 +2241,11 @@ impl App {
         #[cfg(target_arch = "wasm32")]
         let needs_poll = self.playback_handle.is_some() || self.web_midi_access.is_some();
         let playback = if needs_poll {
-            iced::time::every(std::time::Duration::from_millis(16))
-                .map(|_| Message::PollPlayback)
+            iced::time::every(std::time::Duration::from_millis(16)).map(|_| Message::PollPlayback)
         } else {
             Subscription::none()
         };
-        let resize = iced::window::resize_events()
-            .map(|(_, size)| Message::WindowResized(size));
+        let resize = iced::window::resize_events().map(|(_, size)| Message::WindowResized(size));
         let computer_keyboard = if self.keyboard_hits_enabled {
             iced::event::listen_with(computer_keyboard_event)
         } else {
@@ -1889,10 +2278,12 @@ impl App {
             .on_press(Message::OpenFile);
 
         let meta: Element<Message> = if let Some(ref e) = self.load_error {
-            text(format!("Error: {e}")).color(Color::from_rgb(0.98, 0.48, 0.38)).into()
+            text(format!("Error: {e}"))
+                .color(Color::from_rgb(0.98, 0.48, 0.38))
+                .into()
         } else if let Some(ref f) = self.midi_file {
-            let bpm  = midi::bpm_at(0, &f.tempo_map);
-            let dur  = midi::total_duration_secs(f);
+            let bpm = midi::bpm_at(0, &f.tempo_map);
+            let dur = midi::total_duration_secs(f);
             let mins = (dur / 60.0) as u32;
             let secs = (dur % 60.0) as u32;
             let offset_label = if self.octave_offset == 0 {
@@ -1904,7 +2295,9 @@ impl App {
             };
             let skip = if self.skipped_notes > 0 {
                 format!("  ({} skipped)", self.skipped_notes)
-            } else { String::new() };
+            } else {
+                String::new()
+            };
             text(format!(
                 "{}/{}   ·   {:.0} BPM   ·   {}:{:02}   ·   {}{}",
                 f.time_sig.0, f.time_sig.1, bpm, mins, secs, offset_label, skip
@@ -1923,28 +2316,47 @@ impl App {
         let layout_label = self.key_pick_mode.label();
         let pitch_controls = row![
             text("PITCH").size(10).color(TEXT_MUTED),
-            button("−").padding([5, 10]).style(control_style)
+            button("−")
+                .padding([5, 10])
+                .style(control_style)
                 .on_press_maybe(has_file.then_some(Message::PitchDown)),
-            button(step_label).padding([5, 10]).style(control_style)
+            button(step_label)
+                .padding([5, 10])
+                .style(control_style)
                 .on_press(Message::PitchStepToggle),
-            button("+").padding([5, 10]).style(control_style)
+            button("+")
+                .padding([5, 10])
+                .style(control_style)
                 .on_press_maybe(has_file.then_some(Message::PitchUp)),
-            button("Reset").padding([5, 10]).style(control_style)
+            button("Reset")
+                .padding([5, 10])
+                .style(control_style)
                 .on_press_maybe((self.octave_offset != 0).then_some(Message::PitchReset)),
-            button(layout_label).padding([5, 10]).style(control_style)
+            button(layout_label)
+                .padding([5, 10])
+                .style(control_style)
                 .on_press(Message::OctaveLayoutToggle),
         ]
         .spacing(5)
         .align_y(Alignment::Center);
 
-        let all_notes_label = if self.show_all_notes { "All notes: on" } else { "All notes" };
+        let all_notes_label = if self.show_all_notes {
+            "All notes: on"
+        } else {
+            "All notes"
+        };
         let all_notes_btn = button(all_notes_label)
             .padding([5, 10])
-            .style(if self.show_all_notes { accent_style } else { control_style })
+            .style(if self.show_all_notes {
+                accent_style
+            } else {
+                control_style
+            })
             .on_press_maybe(has_file.then_some(Message::ToggleAllNotes));
 
         #[cfg(not(target_arch = "wasm32"))]
-        let port_label = self.midi_port_names
+        let port_label = self
+            .midi_port_names
             .get(self.midi_port_idx)
             .map(|s| s.as_str())
             .unwrap_or("No MIDI output");
@@ -1954,9 +2366,22 @@ impl App {
             .style(control_style)
             .on_press(Message::NextPort);
 
+        let live_channel_btn = pick_list(
+            channel_options("PLAY CH"),
+            Some(ChannelOption { prefix: "PLAY CH", channel: self.live_channel + 1 }),
+            |opt: ChannelOption| Message::LiveChannel(opt.channel - 1),
+        )
+        .text_size(12)
+        .padding([8, 12])
+        .style(channel_pick_list_style);
+
         #[cfg(target_arch = "wasm32")]
         let web_midi_controls: Element<Message> = if self.web_midi_access.is_none() {
-            let label = if self.web_midi_pending { "Connecting MIDI…" } else { "Connect MIDI" };
+            let label = if self.web_midi_pending {
+                "Connecting MIDI…"
+            } else {
+                "Connect MIDI"
+            };
             let connect = button(text(label).size(12))
                 .padding([8, 12])
                 .style(control_style)
@@ -1964,11 +2389,13 @@ impl App {
             let status = self.web_midi_status.as_deref().unwrap_or("");
             column![
                 connect,
-                text(status).size(9).color(if status.starts_with("MIDI error:") {
-                    Color::from_rgb(0.98, 0.48, 0.38)
-                } else {
-                    TEXT_MUTED
-                }),
+                text(status)
+                    .size(9)
+                    .color(if status.starts_with("MIDI error:") {
+                        Color::from_rgb(0.98, 0.48, 0.38)
+                    } else {
+                        TEXT_MUTED
+                    }),
             ]
             .spacing(2)
             .into()
@@ -1978,7 +2405,9 @@ impl App {
                     .and_then(|id| ports.iter().find(|port| port.id == id))
                     .map(|port| {
                         let mut name: String = port.name.chars().take(22).collect();
-                        if port.name.chars().count() > 22 { name.push('…'); }
+                        if port.name.chars().count() > 22 {
+                            name.push('…');
+                        }
                         name
                     })
                     .unwrap_or_else(|| "Off".to_string())
@@ -1987,14 +2416,22 @@ impl App {
             let output_name = port_name(&self.web_midi_outputs, self.web_midi_output_id.as_deref());
             let input = button(text(format!("MIDI IN · {input_name}")).size(11))
                 .padding([7, 10])
-                .style(if self.web_midi_input_id.is_some() { accent_style } else { control_style })
+                .style(if self.web_midi_input_id.is_some() {
+                    accent_style
+                } else {
+                    control_style
+                })
                 .on_press_maybe(
                     (!self.web_midi_inputs.is_empty() || self.web_midi_input_id.is_some())
                         .then_some(Message::NextWebMidiInput),
                 );
             let output = button(text(format!("MIDI OUT · {output_name}")).size(11))
                 .padding([7, 10])
-                .style(if self.web_midi_output_id.is_some() { accent_style } else { control_style })
+                .style(if self.web_midi_output_id.is_some() {
+                    accent_style
+                } else {
+                    control_style
+                })
                 .on_press_maybe(
                     (!self.web_midi_outputs.is_empty() || self.web_midi_output_id.is_some())
                         .then_some(Message::NextWebMidiOutput),
@@ -2002,11 +2439,13 @@ impl App {
             let status = self.web_midi_status.as_deref().unwrap_or("");
             column![
                 row![input, output].spacing(5),
-                text(status).size(9).color(if status.starts_with("MIDI error:") {
-                    Color::from_rgb(0.98, 0.48, 0.38)
-                } else {
-                    TEXT_MUTED
-                }),
+                text(status)
+                    .size(9)
+                    .color(if status.starts_with("MIDI error:") {
+                        Color::from_rgb(0.98, 0.48, 0.38)
+                    } else {
+                        TEXT_MUTED
+                    }),
             ]
             .spacing(2)
             .into()
@@ -2020,11 +2459,11 @@ impl App {
         .width(Length::Fill);
 
         #[cfg(not(target_arch = "wasm32"))]
-        let header_top = row![identity, port_btn, open_btn]
+        let header_top = row![identity, port_btn, live_channel_btn, open_btn]
             .spacing(row_gap)
             .align_y(Alignment::Center);
         #[cfg(target_arch = "wasm32")]
-        let header_top = row![identity, web_midi_controls, open_btn]
+        let header_top = row![identity, web_midi_controls, live_channel_btn, open_btn]
             .spacing(row_gap)
             .align_y(Alignment::Center);
         let header_bottom = row![
@@ -2055,13 +2494,30 @@ impl App {
             .padding([8, 12])
             .style(control_style)
             .on_press_maybe(
-                (has_file && self.play_state != PlayState::Stopped).then_some(Message::Stop)
+                (has_file && self.play_state != PlayState::Stopped).then_some(Message::Stop),
             );
+
+        let looper_label = match (self.looper_enabled, self.staff_selection.is_some()) {
+            (false, _) => "Loop: off",
+            (true, true) => "Loop: selection",
+            (true, false) => "Loop: song",
+        };
+        let looper_btn = button(looper_label)
+            .padding([8, 12])
+            .style(if self.looper_enabled {
+                accent_style
+            } else {
+                control_style
+            })
+            .on_press(Message::ToggleLooper);
 
         let audio_label = if let Some(error) = &self.audio_error {
             #[cfg(target_arch = "wasm32")]
             if self.web_midi_output.is_some() {
-                if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                if self
+                    .audio_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
                     "MIDI output on".to_string()
                 } else {
                     "MIDI output muted".to_string()
@@ -2071,7 +2527,10 @@ impl App {
             }
             #[cfg(not(target_arch = "wasm32"))]
             format!("Sound unavailable · {error}")
-        } else if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+        } else if self
+            .audio_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             "Sound on".to_string()
         } else {
             "Muted".to_string()
@@ -2092,8 +2551,26 @@ impl App {
         };
         let keyboard_hits_btn = button(keyboard_hits_label)
             .padding([8, 12])
-            .style(if self.keyboard_hits_enabled { accent_style } else { control_style })
+            .style(if self.keyboard_hits_enabled {
+                accent_style
+            } else {
+                control_style
+            })
             .on_press(Message::ToggleKeyboardHits);
+
+        let drum_symbols_label = if self.drum_symbols_enabled {
+            "Drum symbols: on"
+        } else {
+            "Drum symbols: off"
+        };
+        let drum_symbols_btn = button(drum_symbols_label)
+            .padding([8, 12])
+            .style(if self.drum_symbols_enabled {
+                accent_style
+            } else {
+                control_style
+            })
+            .on_press(Message::ToggleDrumSymbols);
 
         // Arrow Up/Down transpose hand-played notes; only worth showing once
         // it's actually been nudged off center.
@@ -2109,9 +2586,12 @@ impl App {
         let (progress, time_str) = if let Some(ref f) = self.midi_file {
             let p = if f.total_ticks > 0 {
                 self.position_tick as f32 / f.total_ticks as f32
-            } else { 0.0 };
-            let cur_us = midi::tick_to_micros_abs(self.position_tick, &f.tempo_map, f.ticks_per_beat);
-            let tot_us = midi::tick_to_micros_abs(f.total_ticks,     &f.tempo_map, f.ticks_per_beat);
+            } else {
+                0.0
+            };
+            let cur_us =
+                midi::tick_to_micros_abs(self.position_tick, &f.tempo_map, f.ticks_per_beat);
+            let tot_us = midi::tick_to_micros_abs(f.total_ticks, &f.tempo_map, f.ticks_per_beat);
             let fmt = |us: u64| format!("{}:{:02}", us / 60_000_000, (us % 60_000_000) / 1_000_000);
             (p, format!("{} / {}", fmt(cur_us), fmt(tot_us)))
         } else {
@@ -2131,55 +2611,85 @@ impl App {
                 .into()
         };
 
-        let transport_row = container(row![
-            play_pause_btn, stop_btn, audio_btn, keyboard_hits_btn,
-            live_octave_label,
-            scrubber,
-            text(time_str).size(13).color(TEXT_MUTED),
-        ]
-        .spacing(row_gap)
-        .align_y(Alignment::Center))
+        let transport_row = container(
+            row![
+                play_pause_btn,
+                stop_btn,
+                looper_btn,
+                audio_btn,
+                keyboard_hits_btn,
+                drum_symbols_btn,
+                live_octave_label,
+                scrubber,
+                text(time_str).size(13).color(TEXT_MUTED),
+            ]
+            .spacing(row_gap)
+            .align_y(Alignment::Center),
+        )
         .padding([panel_v, panel_h])
         .style(panel_style);
 
         // ── Row 3: track mutes ─────────────────────────────────────────────
         let track_row: Element<Message> = if let Some(ref f) = self.midi_file {
-            let items: Vec<Element<Message>> = f.tracks.iter().enumerate().map(|(i, t)| {
-                let name  = t.name.as_deref().unwrap_or("Track");
-                let label = format!("{}: {}", i + 1, name);
-                let muted = self.track_muted.get(i).copied().unwrap_or(false);
-                let (r, g, b) = render::TRACK_COLORS[i % render::TRACK_COLORS.len()];
-                let swatch = container(text(""))
-                    .width(12)
-                    .height(12)
-                    .style(move |_| container::Style {
-                        background: Some(Background::Color(Color::from_rgb8(r, g, b))),
-                        border: iced::Border { radius: 2.0.into(), ..Default::default() },
-                        ..Default::default()
-                    });
-                row![
-                    swatch,
-                    checkbox(muted).label(label).on_toggle(move |v| Message::TrackMuted(i, v))
-                ]
-                .spacing(4)
-                .align_y(Alignment::Center)
-                .into()
-            }).collect();
+            let items: Vec<Element<Message>> =
+                f.tracks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let name = t.name.as_deref().unwrap_or("Track");
+                        let label = format!("{}: {}", i + 1, name);
+                        let muted = self.track_muted.get(i).copied().unwrap_or(false);
+                        let (r, g, b) = render::TRACK_COLORS[i % render::TRACK_COLORS.len()];
+                        let swatch = container(text("")).width(12).height(12).style(move |_| {
+                            container::Style {
+                                background: Some(Background::Color(Color::from_rgb8(r, g, b))),
+                                border: iced::Border {
+                                    radius: 2.0.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }
+                        });
+                        let channel = self.track_channel.get(i).copied().unwrap_or(0);
+                        let channel_picker = pick_list(
+                            channel_options("CH"),
+                            Some(ChannelOption { prefix: "CH", channel: channel + 1 }),
+                            move |opt: ChannelOption| Message::TrackChannel(i, opt.channel - 1),
+                        )
+                        .text_size(11)
+                        .padding([3, 6])
+                        .style(channel_pick_list_style);
+                        row![
+                            swatch,
+                            checkbox(muted)
+                                .label(label)
+                                .on_toggle(move |v| Message::TrackMuted(i, v)),
+                            channel_picker,
+                        ]
+                        .spacing(4)
+                        .align_y(Alignment::Center)
+                        .into()
+                    })
+                    .collect();
             let tracks = scrollable(row(items).spacing(track_gap).align_y(Alignment::Center))
                 .direction(scrollable::Direction::Horizontal(
                     scrollable::Scrollbar::new().width(6).scroller_width(6),
                 ));
-            container(row![text("TRACKS").size(10).color(TEXT_MUTED), tracks]
-                .spacing(row_gap)
-                .align_y(Alignment::Center))
-                .padding([panel_v, panel_h])
-                .style(panel_style)
-                .into()
+            container(
+                row![text("TRACKS").size(10).color(TEXT_MUTED), tracks]
+                    .spacing(row_gap)
+                    .align_y(Alignment::Center),
+            )
+            .padding([panel_v, panel_h])
+            .style(panel_style)
+            .into()
         } else {
             container(
                 row![
                     text("TRACKS").size(10).color(TEXT_MUTED),
-                    text("Track controls appear after loading a MIDI file").size(12).color(TEXT_MUTED),
+                    text("Track controls appear after loading a MIDI file")
+                        .size(12)
+                        .color(TEXT_MUTED),
                 ]
                 .spacing(row_gap)
                 .align_y(Alignment::Center),
@@ -2205,13 +2715,20 @@ impl App {
         let overlay_highlighted = None;
 
         let keyboard = Canvas::new(BoardCanvas {
-            keys:        &self.keys,
+            keys: &self.keys,
             highlighted: highlighted_ref,
             overlay_highlighted,
-            play_order: self.staff_selection.is_some().then_some(&self.selection_play_order),
+            play_order: self
+                .staff_selection
+                .is_some()
+                .then_some(&self.selection_play_order),
             selected_controls: &self.waveform_keys,
             pressed: &self.pressed_keys,
-            projected_labels: self.keyboard_hits_enabled.then_some(&self.computer_key_labels),
+            projected_labels: self
+                .keyboard_hits_enabled
+                .then_some(&self.computer_key_labels),
+            drum_note_to_key: &self.drum_note_to_key,
+            show_drum_symbols: self.drum_symbols_enabled,
             knob_values: &self.knob_values,
         })
         .width(Length::Fill)
@@ -2220,13 +2737,13 @@ impl App {
         // ── Staff canvas (or, with nothing loaded, usage instructions) ──────
         let staff: Element<Message> = if has_file {
             Canvas::new(StaffCanvas {
-                midi_file:     self.midi_file.as_ref(),
+                midi_file: self.midi_file.as_ref(),
                 position_tick: self.position_tick,
-                track_muted:   &self.track_muted,
+                track_muted: &self.track_muted,
                 octave_offset: self.octave_offset,
-                selection:     self.staff_selection,
-                keyboard_notes:    &self.keyboard_notes,
-                drum_note_to_key:  &self.drum_note_to_key,
+                selection: self.staff_selection,
+                keyboard_notes: &self.keyboard_notes,
+                drum_note_to_key: &self.drum_note_to_key,
             })
             .width(Length::Fill)
             .height(Length::Fill)
@@ -2237,16 +2754,24 @@ impl App {
 
         // ── Selection info ────────────────────────────────────────────────
         let selection_row: Element<Message> = if has_file {
-            let msg = self.selection_summary()
+            let msg = self
+                .selection_summary()
                 .unwrap_or_else(|| "Drag on the staff to inspect notes in a range".to_string());
             text(msg).size(12).color(TEXT_MUTED).into()
         } else {
             row![].into()
         };
 
-        let content = column![file_row, transport_row, track_row, keyboard, staff, selection_row]
-            .spacing(section_gap)
-            .height(Length::Fill);
+        let content = column![
+            file_row,
+            transport_row,
+            track_row,
+            keyboard,
+            staff,
+            selection_row
+        ]
+        .spacing(section_gap)
+        .height(Length::Fill);
 
         container(content)
             .padding(outer_pad)
@@ -2267,7 +2792,7 @@ fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'stat
     let heading = |t: &'static str| text(t).size(13).color(TEXT_MAIN);
     let body = |t: &'static str| text(t).size(12).color(TEXT_MUTED);
 
-    let sections: [(&str, &str); 7] = [
+    let sections: [(&str, &str); 9] = [
         (
             "Getting started",
             "Click \"Open MIDI\" to load a .mid file, then use Play / Pause / Stop or drag \
@@ -2296,6 +2821,15 @@ fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'stat
              keyboard.",
         ),
         (
+            "Drum symbols",
+            "Shows the GM percussion instrument assigned to each drum pad. Turn it off to \
+             restore the pad's numpad legends.",
+        ),
+        (
+            "Looper",
+            "Automatically restarts the loaded MIDI file when playback reaches the end.",
+        ),
+        (
             "Sound / MIDI OUT",
             "\"Sound on\" mutes the built-in synth or selected MIDI output. In Chrome \
              or desktop Firefox, use Connect MIDI, then cycle the separate MIDI IN and \
@@ -2308,8 +2842,8 @@ fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'stat
         ),
     ];
 
-    let mut col = column![text("How to use K2 MIDI Viewer").size(16).color(TEXT_MAIN)]
-        .spacing(row_gap * 1.5);
+    let mut col =
+        column![text("How to use K2 MIDI Viewer").size(16).color(TEXT_MAIN)].spacing(row_gap * 1.5);
 
     for (h, b) in sections {
         col = col.push(column![heading(h), body(b)].spacing(2));
@@ -2370,8 +2904,12 @@ mod url_state {
     }
 
     pub fn load(app: &mut App) {
-        let Some(window) = web_sys::window() else { return };
-        let Ok(search) = window.location().search() else { return };
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Ok(search) = window.location().search() else {
+            return;
+        };
         let query = search.strip_prefix('?').unwrap_or(&search).to_string();
 
         let mut pairs = std::collections::HashMap::new();
@@ -2383,8 +2921,12 @@ mod url_state {
         }
 
         for (i, param) in crate::synth::KNOB_PARAMS.iter().enumerate() {
-            let Some(raw) = pairs.get(knob_slug(param.label).as_str()) else { continue };
-            let Ok(real) = raw.parse::<f32>() else { continue };
+            let Some(raw) = pairs.get(knob_slug(param.label).as_str()) else {
+                continue;
+            };
+            let Ok(real) = raw.parse::<f32>() else {
+                continue;
+            };
             let real = real.clamp(param.min, param.max);
             let pos = if param.max > param.min {
                 (real - param.min) / (param.max - param.min)
@@ -2401,30 +2943,47 @@ mod url_state {
         if let Some(&v) = pairs.get("keys") {
             app.keyboard_hits_enabled = v != "0";
         }
+        if let Some(&v) = pairs.get("drum_symbols") {
+            app.drum_symbols_enabled = v != "0";
+        }
+        if let Some(&v) = pairs.get("loop") {
+            app.looper_enabled = v != "0";
+        }
         if let Some(&v) = pairs.get("row") {
             app.key_pick_mode = match v {
+                "lr" => KeyPickMode::LeftRight,
                 "ud" => KeyPickMode::UpDown,
-                "closest" => KeyPickMode::Closest,
-                _ => KeyPickMode::LeftRight,
+                _ => KeyPickMode::Closest,
             };
         }
         if let Some(octaves) = pairs.get("live_octave").and_then(|v| v.parse::<i8>().ok()) {
             app.live_octave = octaves.saturating_mul(12);
         }
         if let Some(&v) = pairs.get("waveforms") {
-            app.waveform_keys = v.split(',')
+            app.waveform_keys = v
+                .split(',')
                 .filter_map(waveform_from_slug)
                 .filter_map(label_for_waveform)
-                .filter_map(|label| app.keys.iter().find(|k| k.cluster == Cluster::Nav && k.label == label))
+                .filter_map(|label| {
+                    app.keys
+                        .iter()
+                        .find(|k| k.cluster == Cluster::Nav && k.label == label)
+                })
                 .map(|k| k.id)
                 .collect();
         }
     }
 
     pub fn save(app: &App) {
-        let Some(window) = web_sys::window() else { return };
-        let Ok(pathname) = window.location().pathname() else { return };
-        let Ok(history) = window.history() else { return };
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Ok(pathname) = window.location().pathname() else {
+            return;
+        };
+        let Ok(history) = window.history() else {
+            return;
+        };
 
         // Only knobs actually moved from their default, and only the other
         // settings that differ from their default, make it into the URL —
@@ -2432,7 +2991,12 @@ mod url_state {
         let mut params: Vec<String> = Vec::new();
 
         for (i, param) in crate::synth::KNOB_PARAMS.iter().enumerate() {
-            let pos = app.knob_values.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let pos = app
+                .knob_values
+                .get(i)
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
             let real = param.min + pos * (param.max - param.min);
             if (real - param.default).abs() > 0.005 {
                 params.push(format!("{}={:.2}", knob_slug(param.label), real));
@@ -2445,10 +3009,16 @@ mod url_state {
         if app.keyboard_hits_enabled {
             params.push("keys=1".to_string());
         }
+        if app.drum_symbols_enabled {
+            params.push("drum_symbols=1".to_string());
+        }
+        if app.looper_enabled {
+            params.push("loop=1".to_string());
+        }
         let row = match app.key_pick_mode {
-            KeyPickMode::LeftRight => None,
+            KeyPickMode::LeftRight => Some("lr"),
             KeyPickMode::UpDown => Some("ud"),
-            KeyPickMode::Closest => Some("closest"),
+            KeyPickMode::Closest => None,
         };
         if let Some(row) = row {
             params.push(format!("row={row}"));
@@ -2526,10 +3096,18 @@ mod tests {
         let labels = computer_projection_labels(&layout.keys);
 
         assert_eq!(mapped.len(), 6);
-        assert!(mapped.iter().all(|id| layout.keys.iter()
-            .find(|candidate| candidate.id == *id)
-            .is_some_and(|candidate| candidate.row == 5.0)));
-        assert!(mapped.iter().all(|id| labels.get(id).is_some_and(|label| label == "SPACE")));
+        assert!(mapped.iter().all(|id| {
+            layout
+                .keys
+                .iter()
+                .find(|candidate| candidate.id == *id)
+                .is_some_and(|candidate| candidate.row == 5.0)
+        }));
+        assert!(
+            mapped
+                .iter()
+                .all(|id| labels.get(id).is_some_and(|label| label == "SPACE"))
+        );
     }
 
     #[test]
@@ -2537,10 +3115,20 @@ mod tests {
         let layout = build_layout();
         let key = ComputerKey::Character("0".to_string(), ComputerKeyLocation::Numpad);
         let mapped = mapped_computer_keys(&layout.keys, &key);
+        let labels = computer_projection_labels(&layout.keys);
 
         assert_eq!(mapped.len(), 2);
-        assert!(mapped.iter().all(|id| layout.drum_note_to_key.values()
-            .any(|drum_key| drum_key == id)));
+        assert!(mapped.iter().all(|id| {
+            layout
+                .drum_note_to_key
+                .values()
+                .any(|drum_key| drum_key == id)
+        }));
+        assert!(
+            mapped
+                .iter()
+                .all(|id| labels.get(id).is_some_and(|label| label == "0"))
+        );
     }
 
     #[test]
@@ -2576,15 +3164,25 @@ mod tests {
     fn midi_input_parses_note_on_note_off_and_zero_velocity() {
         assert_eq!(
             parse_midi_input(&[0x92, 64, 100]),
-            Some(MidiInputAction::NoteOn { note: 64, velocity: 100, channel: 2 }),
+            Some(MidiInputAction::NoteOn {
+                note: 64,
+                velocity: 100,
+                channel: 2
+            }),
         );
         assert_eq!(
             parse_midi_input(&[0x82, 64, 0]),
-            Some(MidiInputAction::NoteOff { note: 64, channel: 2 }),
+            Some(MidiInputAction::NoteOff {
+                note: 64,
+                channel: 2
+            }),
         );
         assert_eq!(
             parse_midi_input(&[0x92, 64, 0]),
-            Some(MidiInputAction::NoteOff { note: 64, channel: 2 }),
+            Some(MidiInputAction::NoteOff {
+                note: 64,
+                channel: 2
+            }),
         );
     }
 

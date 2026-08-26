@@ -24,8 +24,11 @@ pub struct TempoChange {
 
 #[derive(Debug, Clone)]
 pub struct TrackInfo {
-    pub index: usize,
-    pub name:  Option<String>,
+    pub index:   usize,
+    pub name:    Option<String>,
+    /// Channel of this track's first MIDI event, used as the default output
+    /// channel before any per-track override is applied.
+    pub channel: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +89,7 @@ pub fn load_bytes(bytes: &[u8]) -> Result<MidiFile, String> {
     for (track_idx, track) in smf.tracks.iter().enumerate() {
         let mut abs_tick = 0u64;
         let mut track_name: Option<String> = None;
+        let mut track_channel: Option<u8> = None;
 
         for event in track {
             abs_tick += event.delta.as_int() as u64;
@@ -93,6 +97,7 @@ pub fn load_bytes(bytes: &[u8]) -> Result<MidiFile, String> {
             match event.kind {
                 midly::TrackEventKind::Midi { channel, message } => {
                     let ch = channel.as_int();
+                    track_channel.get_or_insert(ch);
                     match message {
                         midly::MidiMessage::NoteOn { key, vel } => {
                             let note = key.as_int();
@@ -138,7 +143,7 @@ pub fn load_bytes(bytes: &[u8]) -> Result<MidiFile, String> {
             }
         }
 
-        tracks.push(TrackInfo { index: track_idx, name: track_name });
+        tracks.push(TrackInfo { index: track_idx, name: track_name, channel: track_channel });
     }
 
     // Sort merged event list by tick; stable so track order is preserved within a tick
