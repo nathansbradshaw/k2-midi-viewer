@@ -6,13 +6,15 @@ use std::collections::{HashMap, HashSet};
 pub const NAV_COL: f32 = 15.5;
 pub const NUMPAD_COL: f32 = 19.0;
 
-/// Column pitch and width for the 12 encoder knobs. Chosen so the whole
-/// encoder row still lands inside the same horizontal footprint the original
-/// 8 full-width knobs occupied — NAV_COL is calibrated to the alpha block's
-/// real PCB spacing (see `right_hand_sections_share_alignment_and_spacing`)
-/// and must not shift to make room here.
-pub const KNOB_COL_STEP: f32 = 2.0 / 3.0;
-pub const KNOB_WIDTH: f32 = 0.5;
+/// Column pitch, width and height for the 12 encoder knobs. Sized to fill
+/// most of the alpha block's width (cols 0..~14.6), matching the real
+/// board's photo reference, while still landing just short of NAV_COL —
+/// which is calibrated to the alpha block's real PCB spacing (see
+/// `right_hand_sections_share_alignment_and_spacing`) and must not move.
+/// Height is less than a full row so a label can sit under each knob.
+pub const KNOB_COL_STEP: f32 = 1.25;
+pub const KNOB_WIDTH: f32 = 0.85;
+pub const KNOB_HEIGHT: f32 = 0.75;
 
 pub struct Layout {
     pub keys: Vec<Key>,
@@ -80,7 +82,7 @@ pub fn build_layout() -> Layout {
     for i in 0..crate::synth::KNOB_COUNT {
         keys.push(
             Key::new(next_id(), "", i as f32 * KNOB_COL_STEP, 0.0, Cluster::Encoder)
-                .size(KNOB_WIDTH, 1.0)
+                .size(KNOB_WIDTH, KNOB_HEIGHT)
                 .knob(i as u8),
         );
     }

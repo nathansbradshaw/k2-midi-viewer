@@ -28,8 +28,6 @@ const BOARD_INSET_Y: f32 = 28.0;
 const NUMPAD_Y_OFFSET: f32 = UNIT + GAP;
 const BOARD_LAYOUT_WIDTH: f32 = 1330.0;
 const MIN_BOARD_INSET_X: f32 = 8.0;
-/// Pixels of vertical drag needed to sweep a knob across its full 0.0..=1.0 range.
-const KNOB_DRAG_RANGE_PX: f32 = 150.0;
 
 fn board_inset_x(width: f32) -> f32 {
     ((width - BOARD_LAYOUT_WIDTH) / 2.0).max(MIN_BOARD_INSET_X)
@@ -54,7 +52,16 @@ pub struct CanvasState {
     cache: canvas::Cache,
     pressed: Option<KeyId>,
     dragging_knob: Option<u8>,
-    drag_last_y: f32,
+}
+
+/// Vertical extent of the pop-up slider shown while a knob is held, in
+/// canvas-local coordinates. The slider maps cursor Y to a value directly
+/// (absolute position, not relative drag delta) over a much longer travel
+/// than the knob itself — far easier to land on a precise setting than
+/// eyeballing rotation on a small dial.
+fn knob_slider_track(knob_rect: Rectangle) -> (f32, f32) {
+    let top = knob_rect.y + knob_rect.height + 22.0;
+    (top, top + 160.0)
 }
 
 impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
@@ -75,7 +82,6 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                         if key_rect_with_inset(key, inset_x).contains(pos) {
                             if let Some(idx) = key.knob_index {
                                 state.dragging_knob = Some(idx);
-                                state.drag_last_y = pos.y;
                                 return Some(canvas::Action::capture());
                             }
                             state.pressed = Some(key.id);
@@ -90,14 +96,18 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some(idx) = state.dragging_knob {
                     if let Some(pos) = cursor.position_in(bounds) {
-                        let delta = (state.drag_last_y - pos.y) / KNOB_DRAG_RANGE_PX;
-                        state.drag_last_y = pos.y;
-                        let current = self.knob_values.get(idx as usize).copied().unwrap_or(0.0);
-                        let value = (current + delta).clamp(0.0, 1.0);
-                        return Some(
-                            canvas::Action::publish(Message::KnobChanged(idx, value))
-                                .and_capture(),
-                        );
+                        let inset_x = board_inset_x(bounds.width);
+                        if let Some(knob_rect) = self.keys.iter()
+                            .find(|key| key.knob_index == Some(idx))
+                            .map(|key| key_rect_with_inset(key, inset_x))
+                        {
+                            let (top, bottom) = knob_slider_track(knob_rect);
+                            let value = 1.0 - ((pos.y - top) / (bottom - top)).clamp(0.0, 1.0);
+                            return Some(
+                                canvas::Action::publish(Message::KnobChanged(idx, value))
+                                    .and_capture(),
+                            );
+                        }
                     }
                 }
             }
@@ -110,6 +120,30 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                         canvas::Action::publish(Message::KeyReleased(id))
                             .and_capture(),
                     );
+                }
+            }
+            // Hovering a knob and scrolling nudges its value — much easier
+            // than dragging to "turn" it, which is what click-drag simulates.
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                if let Some(pos) = cursor.position_in(bounds) {
+                    let inset_x = board_inset_x(bounds.width);
+                    for key in self.keys {
+                        if key_rect_with_inset(key, inset_x).contains(pos) {
+                            if let Some(idx) = key.knob_index {
+                                let amount = match *delta {
+                                    mouse::ScrollDelta::Lines { y, .. } => y * 0.05,
+                                    mouse::ScrollDelta::Pixels { y, .. } => y / 200.0,
+                                };
+                                let current = self.knob_values.get(idx as usize).copied().unwrap_or(0.0);
+                                let value = (current + amount).clamp(0.0, 1.0);
+                                return Some(
+                                    canvas::Action::publish(Message::KnobChanged(idx, value))
+                                        .and_capture(),
+                                );
+                            }
+                            break;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -146,14 +180,20 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
 
     fn mouse_interaction(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        if state.dragging_knob.is_some() {
+            return mouse::Interaction::ResizingVertically;
+        }
         if let Some(pos) = cursor.position_in(bounds) {
             let inset_x = board_inset_x(bounds.width);
             for key in self.keys {
                 if key_rect_with_inset(key, inset_x).contains(pos) {
+                    if key.is_knob {
+                        return mouse::Interaction::ResizingVertically;
+                    }
                     return mouse::Interaction::Pointer;
                 }
             }
@@ -324,19 +364,15 @@ fn draw_board(
         );
     }
 
-    frame.fill_text(Text {
-        content: "K2  /  MIDI PERFORMANCE KEYBOARD".to_string(),
-        position: Point::new(inset_x + 8.45 * (UNIT + GAP), BOARD_INSET_Y + 12.0),
-        color: rgb(0xF0, 0xC9, 0x9A),
-        size: iced::Pixels(12.0),
-        font: CANVAS_FONT,
-        ..Text::default()
-    });
+    // Status display sits directly left of the NUM/CAPS/SCROLL panel, both
+    // above the numpad, instead of floating alone in the middle of the deck.
+    let display_width_cols = 2.55;
+    let display_col = NUMPAD_COL - display_width_cols - 0.3;
     let display_bezel = rounded_rect(
         Rectangle {
-            x: inset_x + 12.35 * (UNIT + GAP),
+            x: inset_x + display_col * (UNIT + GAP),
             y: BOARD_INSET_Y + 4.0,
-            width: 2.55 * (UNIT + GAP),
+            width: display_width_cols * (UNIT + GAP),
             height: 36.0,
         },
         5.0,
@@ -344,7 +380,7 @@ fn draw_board(
     frame.fill(&display_bezel, rgb(0x14, 0x11, 0x1B));
     let display = rounded_rect(
         Rectangle {
-            x: inset_x + 12.55 * (UNIT + GAP),
+            x: inset_x + (display_col + 0.2) * (UNIT + GAP),
             y: BOARD_INSET_Y + 11.0,
             width: 2.15 * (UNIT + GAP),
             height: 21.0,
@@ -353,16 +389,11 @@ fn draw_board(
     );
     frame.fill(&display, rgb(0x28, 0x17, 0x18));
     let display_text = active_knob
-        .and_then(|(idx, value)| {
-            crate::synth::KNOB_PARAMS.get(idx as usize).map(|param| {
-                let real = param.min + value.clamp(0.0, 1.0) * (param.max - param.min);
-                format!("{} {:.2}", param.label, real)
-            })
-        })
+        .and_then(|(idx, value)| knob_readout(idx, value))
         .unwrap_or_else(|| "MIDI READY".to_string());
     frame.fill_text(Text {
         content: display_text,
-        position: Point::new(inset_x + 13.63 * (UNIT + GAP), BOARD_INSET_Y + 21.5),
+        position: Point::new(inset_x + (display_col + display_width_cols / 2.0) * (UNIT + GAP), BOARD_INSET_Y + 21.5),
         color: rgb(0xFF, 0xB5, 0x58),
         size: iced::Pixels(8.0),
         font: CANVAS_FONT,
@@ -428,7 +459,10 @@ fn draw_board(
                 .and_then(|idx| knob_values.get(idx as usize))
                 .copied()
                 .unwrap_or(0.0);
-            draw_knob(frame, rect, value);
+            let label = key.knob_index
+                .and_then(|idx| crate::synth::KNOB_PARAMS.get(idx as usize))
+                .map(|param| param.label);
+            draw_knob(frame, rect, value, label);
             continue;
         }
 
@@ -506,6 +540,78 @@ fn draw_board(
             });
         }
     }
+
+    // Pop-up slider for whichever knob is currently held, drawn last so it
+    // sits on top of the keys it temporarily overlaps.
+    if let Some((idx, value)) = active_knob {
+        if let Some(knob_rect) = keys.iter()
+            .find(|key| key.knob_index == Some(idx))
+            .map(|key| key_rect_with_inset(key, inset_x))
+        {
+            draw_knob_slider(frame, knob_rect, value, knob_readout(idx, value));
+        }
+    }
+}
+
+/// Formats a knob's current position as "<label> <real value>" (e.g.
+/// "Volume 1.00"), scaling the normalized 0.0..=1.0 dial position into the
+/// parameter's real engine units via `KNOB_PARAMS`.
+fn knob_readout(idx: u8, value: f32) -> Option<String> {
+    crate::synth::KNOB_PARAMS.get(idx as usize).map(|param| {
+        let real = param.min + value.clamp(0.0, 1.0) * (param.max - param.min);
+        format!("{} {:.2}", param.label, real)
+    })
+}
+
+fn draw_knob_slider(frame: &mut Frame, knob_rect: Rectangle, value: f32, readout: Option<String>) {
+    let (top, bottom) = knob_slider_track(knob_rect);
+    let center_x = knob_rect.x + knob_rect.width / 2.0;
+    let value = value.clamp(0.0, 1.0);
+
+    let panel = rounded_rect(
+        Rectangle {
+            x: center_x - 50.0,
+            y: top - 24.0,
+            width: 100.0,
+            height: (bottom - top) + 34.0,
+        },
+        8.0,
+    );
+    frame.fill(&panel, Color::from_rgba8(0x10, 0x0F, 0x19, 0.97));
+    frame.stroke(
+        &panel,
+        canvas::Stroke::default().with_color(rgb(0x9A, 0x54, 0x82)).with_width(1.0),
+    );
+
+    if let Some(readout) = readout {
+        frame.fill_text(Text {
+            content: readout,
+            position: Point::new(center_x, top - 12.0),
+            color: rgb(0xFF, 0xB5, 0x58),
+            size: iced::Pixels(10.0),
+            font: CANVAS_FONT,
+            align_x: Horizontal::Center.into(),
+            align_y: Vertical::Center,
+            ..Text::default()
+        });
+    }
+
+    let track = rounded_rect(
+        Rectangle { x: center_x - 3.0, y: top, width: 6.0, height: bottom - top },
+        3.0,
+    );
+    frame.fill(&track, rgb(0x24, 0x1E, 0x2D));
+
+    let handle_y = top + (1.0 - value) * (bottom - top);
+    let filled = rounded_rect(
+        Rectangle { x: center_x - 3.0, y: handle_y, width: 6.0, height: bottom - handle_y },
+        3.0,
+    );
+    frame.fill(&filled, rgb(0xFF, 0x76, 0x7B));
+
+    let handle = Path::circle(Point::new(center_x, handle_y), 8.0);
+    frame.fill(&handle, rgb(0xFF, 0x76, 0x7B));
+    frame.stroke(&handle, canvas::Stroke::default().with_color(Color::WHITE).with_width(1.5));
 }
 
 fn rounded_rect(rect: Rectangle, radius: f32) -> Path {
@@ -518,7 +624,7 @@ fn rounded_rect(rect: Rectangle, radius: f32) -> Path {
     })
 }
 
-fn draw_knob(frame: &mut Frame, rect: Rectangle, value: f32) {
+fn draw_knob(frame: &mut Frame, rect: Rectangle, value: f32, label: Option<&str>) {
     let center = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
     let radius = rect.width.min(rect.height) / 2.0 - 4.0;
 
@@ -553,6 +659,19 @@ fn draw_knob(frame: &mut Frame, rect: Rectangle, value: f32) {
         canvas::Stroke::default().with_color(rgb(0xFF, 0x76, 0x7B)).with_width(2.5),
     );
     frame.fill(&Path::circle(tip, 2.5), rgb(0xFF, 0x76, 0x7B));
+
+    if let Some(label) = label {
+        frame.fill_text(Text {
+            content: label.to_string(),
+            position: Point::new(center.x, rect.y + rect.height + 9.0),
+            color: rgb(0xC3, 0x9F, 0xB6),
+            size: iced::Pixels(8.0),
+            font: CANVAS_FONT,
+            align_x: Horizontal::Center.into(),
+            align_y: Vertical::Center,
+            ..Text::default()
+        });
+    }
 }
 
 #[cfg(test)]

@@ -216,6 +216,31 @@ fn computer_keyboard_event(
     }
 }
 
+/// Arrow Up/Down transpose hand-played notes an octave, independent of
+/// "Computer keys" mode (the arrow cluster has no note assigned, so there's
+/// nothing for it to conflict with). `repeat: false` keeps a held key to one
+/// step instead of free-running.
+fn octave_shortcut_event(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, repeat: false, .. }) => {
+            match key {
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowUp) => {
+                    Some(Message::LiveOctaveUp)
+                }
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowDown) => {
+                    Some(Message::LiveOctaveDown)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// How to pick a key when a note repeats across this keyboard's overlapping
 /// rows. LeftRight/UpDown are fixed, predictable preferences (always the
 /// last/first occurrence). Closest instead solves for the key assignment
@@ -264,6 +289,14 @@ struct App {
     computer_keys_down:    HashMap<ComputerKey, Vec<KeyId>>,
     computer_key_labels:   HashMap<KeyId, String>,
     knob_values:           [f32; synth::KNOB_COUNT], // 0.0..=1.0 dial position per knob
+    /// Semitone transpose applied only to hand-played notes (mouse/computer
+    /// keys), independent of `octave_offset` — which instead remaps which
+    /// board key lights up for a file's notes and shifts file playback.
+    live_octave:           i8,
+    /// The exact (shifted note, channel) actually sent for each currently
+    /// held hand-played key, so release always turns off what was actually
+    /// turned on even if `live_octave` changes while the key is held.
+    live_note_overrides:   HashMap<KeyId, (u8, u8)>,
 
     // MIDI file
     midi_file:        Option<midi::MidiFile>,
@@ -339,6 +372,8 @@ impl Default for App {
             keyboard_hits_enabled: false,
             computer_keys_down:    HashMap::new(),
             computer_key_labels,
+            live_octave:           0,
+            live_note_overrides:   HashMap::new(),
             knob_values: {
                 let mut values = [0.0f32; synth::KNOB_COUNT];
                 for (slot, param) in values.iter_mut().zip(synth::KNOB_PARAMS.iter()) {
@@ -403,6 +438,8 @@ pub enum Message {
     PitchStepToggle,
     PitchReset,
     OctaveLayoutToggle,
+    LiveOctaveUp,
+    LiveOctaveDown,
     ToggleAllNotes,
     // tracks
     TrackMuted(usize, bool),
@@ -900,11 +937,19 @@ impl App {
         }
 
         if let Some((note, channel)) = self.key_sound(id) {
+            // Drum hits aren't pitched — GM percussion notes select a sound,
+            // not a frequency — so the live octave shift doesn't apply.
+            let shifted = if channel == synth::DRUM_CHANNEL {
+                note
+            } else {
+                (note as i16 + self.live_octave as i16).clamp(0, 127) as u8
+            };
+            self.live_note_overrides.insert(id, (shifted, channel));
             if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Some(ref h) = self.playback_handle {
-                    h.cmd_tx.send(PlayCmd::LiveNoteOn(note, 108, channel)).ok();
+                    h.cmd_tx.send(PlayCmd::LiveNoteOn(shifted, 108, channel)).ok();
                 } else if let Some(ref synth) = self.soft_synth {
-                    if let Ok(mut synth) = synth.lock() { synth.note_on(note, 108, channel); }
+                    if let Ok(mut synth) = synth.lock() { synth.note_on(shifted, 108, channel); }
                 }
             }
         }
@@ -912,7 +957,10 @@ impl App {
 
     fn release_board_key(&mut self, id: KeyId) {
         self.pressed_keys.remove(&id);
-        if let Some((note, channel)) = self.key_sound(id) {
+        // Use whatever note was actually turned on for this key, even if
+        // live_octave has changed since — otherwise the wrong voice (or none)
+        // gets the note-off and the original one hangs.
+        if let Some((note, channel)) = self.live_note_overrides.remove(&id) {
             if let Some(ref h) = self.playback_handle {
                 h.cmd_tx.send(PlayCmd::LiveNoteOff(note, channel)).ok();
             } else if let Some(ref synth) = self.soft_synth {
@@ -1100,6 +1148,14 @@ impl App {
                 self.rebuild_closest_key_map();
                 if self.show_all_notes { self.rebuild_all_notes_cache(); }
                 if self.staff_selection.is_some() { self.rebuild_selection_highlight(); }
+                Task::none()
+            }
+            Message::LiveOctaveUp => {
+                self.live_octave = self.live_octave.saturating_add(12);
+                Task::none()
+            }
+            Message::LiveOctaveDown => {
+                self.live_octave = self.live_octave.saturating_sub(12);
                 Task::none()
             }
             Message::PitchStepToggle => {
@@ -1337,8 +1393,9 @@ impl App {
         } else {
             Subscription::none()
         };
+        let octave_shortcut = iced::event::listen_with(octave_shortcut_event);
 
-        Subscription::batch([playback, resize, computer_keyboard])
+        Subscription::batch([playback, resize, computer_keyboard, octave_shortcut])
     }
 
     // ---------------------------------------------------------------------------
@@ -1496,6 +1553,17 @@ impl App {
             .style(if self.keyboard_hits_enabled { accent_style } else { control_style })
             .on_press(Message::ToggleKeyboardHits);
 
+        // Arrow Up/Down transpose hand-played notes; only worth showing once
+        // it's actually been nudged off center.
+        let live_octave_label: Element<Message> = if self.live_octave != 0 {
+            text(format!("Live {:+} oct", self.live_octave / 12))
+                .size(13)
+                .color(ACCENT)
+                .into()
+        } else {
+            text("").into()
+        };
+
         let (progress, time_str) = if let Some(ref f) = self.midi_file {
             let p = if f.total_ticks > 0 {
                 self.position_tick as f32 / f.total_ticks as f32
@@ -1523,6 +1591,7 @@ impl App {
 
         let transport_row = container(row![
             play_pause_btn, stop_btn, audio_btn, keyboard_hits_btn,
+            live_octave_label,
             scrubber,
             text(time_str).size(13).color(TEXT_MUTED),
         ]
