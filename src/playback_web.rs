@@ -17,7 +17,7 @@ pub enum PlayCmd {
     SetAudio(bool),
     SetTrackMuted(usize, bool),
     SetOctaveOffset(i8),
-    SetWaveform(crate::synth::Waveform),
+    SetWaveforms(Vec<crate::synth::Waveform>),
     SetKnob(u8, f32),
     LiveNoteOn(u8, u8, u8),
     LiveNoteOff(u8, u8),
@@ -77,12 +77,12 @@ pub fn spawn(
     _midi_conn: Option<MidiOutputConnection>,
     keyboard_notes: Arc<HashSet<u8>>,
     octave_offset: i8,
-    waveform: crate::synth::Waveform,
+    waveforms: Vec<crate::synth::Waveform>,
     shared_synth: Option<Arc<Mutex<SoftSynth>>>,
 ) -> PlaybackHandle {
     if let Some(ref synth) = shared_synth {
         if let Ok(mut synth) = synth.lock() {
-            synth.set_waveform(waveform);
+            synth.set_active_waveforms(waveforms);
         }
     }
 
@@ -232,10 +232,10 @@ impl WebPlayback {
                     }
                 }
                 PlayCmd::SetOctaveOffset(offset) => self.octave_offset = offset,
-                PlayCmd::SetWaveform(waveform) => {
+                PlayCmd::SetWaveforms(waveforms) => {
                     if let Some(ref synth) = self.synth {
                         if let Ok(mut synth) = synth.lock() {
-                            synth.set_waveform(waveform);
+                            synth.set_active_waveforms(waveforms);
                         }
                     }
                 }

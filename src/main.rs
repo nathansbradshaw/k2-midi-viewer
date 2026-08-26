@@ -282,8 +282,10 @@ struct App {
     keyboard_notes:        std::collections::HashSet<u8>,
     keyboard_notes_sorted: Vec<u8>, // ascending, for nearest-key search
     highlighted:           HashMap<KeyId, usize>, // KeyId → track index
-    waveform:              synth::Waveform,
-    waveform_key:          Option<KeyId>,
+    /// Nav-cluster waveform-select keys currently toggled on; each one is a
+    /// layer summed together in the synth (empty ⇒ Organ). See
+    /// `active_waveforms`.
+    waveform_keys:         HashSet<KeyId>,
     pressed_keys:          HashSet<KeyId>,
     keyboard_hits_enabled: bool,
     computer_keys_down:    HashMap<ComputerKey, Vec<KeyId>>,
@@ -366,8 +368,7 @@ impl Default for App {
             drum_note_to_key:      layout.drum_note_to_key,
             key_pos,
             highlighted:           HashMap::new(),
-            waveform:              synth::Waveform::default(),
-            waveform_key:          None,
+            waveform_keys:         HashSet::new(),
             pressed_keys:          HashSet::new(),
             keyboard_hits_enabled: false,
             computer_keys_down:    HashMap::new(),
@@ -469,15 +470,34 @@ fn pick_key_fixed(kids: &[KeyId], mode: KeyPickMode) -> Option<KeyId> {
     }
 }
 
-fn toggle_waveform(
-    current_key: Option<KeyId>,
-    pressed_key: KeyId,
-    selected: synth::Waveform,
-) -> (Option<KeyId>, synth::Waveform) {
-    if current_key == Some(pressed_key) {
-        (None, synth::Waveform::default())
-    } else {
-        (Some(pressed_key), selected)
+/// The Nav-cluster label ↔ waveform pairing for the six waveform-select
+/// keys (Insert/Home/PgUp/Delete/End/PgDn). Each is an independent on/off
+/// layer — see `App::active_waveforms` — rather than a mutually exclusive
+/// choice, so multiple can be toggled on at once and their outputs blend.
+const WAVEFORM_KEYS: [(&str, synth::Waveform); 6] = [
+    ("Insert", synth::Waveform::Triangle),
+    ("Home",   synth::Waveform::Square),
+    ("PgUp",   synth::Waveform::Saw),
+    ("Delete", synth::Waveform::Sine),
+    ("End",    synth::Waveform::Pulse),
+    ("PgDn",   synth::Waveform::Noise),
+];
+
+fn waveform_for_label(label: &str) -> Option<synth::Waveform> {
+    WAVEFORM_KEYS.iter().find(|(l, _)| *l == label).map(|(_, w)| *w)
+}
+
+// Only consumed by `url_state`, which is wasm-only.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn label_for_waveform(w: synth::Waveform) -> Option<&'static str> {
+    WAVEFORM_KEYS.iter().find(|(_, ww)| *ww == w).map(|(l, _)| *l)
+}
+
+/// Toggles `pressed_key` in the set of active waveform-select keys — press
+/// once to add that waveform as a layer, press again to remove it.
+fn toggle_waveform_key(active: &mut HashSet<KeyId>, pressed_key: KeyId) {
+    if !active.remove(&pressed_key) {
+        active.insert(pressed_key);
     }
 }
 
@@ -718,6 +738,11 @@ impl App {
                 self.soft_synth = Some(synth);
                 self._audio_stream = Some(stream);
                 self.audio_error = None;
+                // The synth is created fresh here, well after any
+                // URL-restored waveform/knob settings were applied to
+                // `self` — push them in now so it doesn't silently start
+                // at engine defaults.
+                self.sync_engine_state();
             }
             Err(error) => self.audio_error = Some(error),
         }
@@ -899,6 +924,44 @@ impl App {
         }
     }
 
+    /// The waveforms currently layered together, derived from whichever
+    /// Nav waveform-select keys are toggled on.
+    fn active_waveforms(&self) -> Vec<synth::Waveform> {
+        self.keys.iter()
+            .filter(|key| self.waveform_keys.contains(&key.id))
+            .filter_map(|key| waveform_for_label(key.label))
+            .collect()
+    }
+
+    fn sync_active_waveforms(&self) {
+        let waveforms = self.active_waveforms();
+        if let Some(ref synth) = self.soft_synth {
+            if let Ok(mut synth) = synth.lock() { synth.set_active_waveforms(waveforms.clone()); }
+        }
+        if let Some(ref h) = self.playback_handle {
+            h.cmd_tx.send(PlayCmd::SetWaveforms(waveforms)).ok();
+        }
+    }
+
+    /// Pushes every App-level audio setting (waveforms, knobs) directly into
+    /// `self.soft_synth`. Needed on the web build: the synth is created
+    /// lazily on first user gesture (see `ensure_web_audio`), well after any
+    /// URL-restored settings were already applied to `self`, so a freshly
+    /// created engine wouldn't otherwise see them until something changed.
+    #[cfg(target_arch = "wasm32")]
+    fn sync_engine_state(&self) {
+        self.sync_active_waveforms();
+        if let Some(ref synth) = self.soft_synth {
+            if let Ok(mut synth) = synth.lock() {
+                for (i, param) in synth::KNOB_PARAMS.iter().enumerate() {
+                    let pos = self.knob_values.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                    let real = param.min + pos * (param.max - param.min);
+                    synth.set_knob(i as u8, real);
+                }
+            }
+        }
+    }
+
     fn key_sound(&self, id: KeyId) -> Option<(u8, u8)> {
         if let Some(note) = self.keys.iter()
             .find(|key| key.id == id)
@@ -913,26 +976,14 @@ impl App {
 
     fn press_board_key(&mut self, id: KeyId) {
         self.pressed_keys.insert(id);
-        let waveform = self.keys.iter()
+        let is_waveform_key = self.keys.iter()
             .find(|key| key.id == id && key.cluster == Cluster::Nav)
-            .and_then(|key| match key.label {
-                "Insert" => Some(synth::Waveform::Triangle),
-                "Home" => Some(synth::Waveform::Square),
-                "PgUp" => Some(synth::Waveform::Saw),
-                _ => None,
-            });
+            .is_some_and(|key| waveform_for_label(key.label).is_some());
 
-        if let Some(waveform) = waveform {
-            let (waveform_key, waveform) =
-                toggle_waveform(self.waveform_key, id, waveform);
-            self.waveform_key = waveform_key;
-            self.waveform = waveform;
-            if let Some(ref synth) = self.soft_synth {
-                if let Ok(mut synth) = synth.lock() { synth.set_waveform(waveform); }
-            }
-            if let Some(ref h) = self.playback_handle {
-                h.cmd_tx.send(PlayCmd::SetWaveform(waveform)).ok();
-            }
+        if is_waveform_key {
+            toggle_waveform_key(&mut self.waveform_keys, id);
+            self.sync_active_waveforms();
+            self.sync_url();
             return;
         }
 
@@ -1123,7 +1174,7 @@ impl App {
                     conn,
                     Arc::new(self.keyboard_notes.clone()),
                     self.octave_offset,
-                    self.waveform,
+                    self.active_waveforms(),
                     self.soft_synth.as_ref().map(Arc::clone),
                 );
                 self.playback_handle = Some(handle);
@@ -1152,10 +1203,12 @@ impl App {
             }
             Message::LiveOctaveUp => {
                 self.live_octave = self.live_octave.saturating_add(12);
+                self.sync_url();
                 Task::none()
             }
             Message::LiveOctaveDown => {
                 self.live_octave = self.live_octave.saturating_sub(12);
+                self.sync_url();
                 Task::none()
             }
             Message::PitchStepToggle => {
@@ -1661,7 +1714,7 @@ impl App {
         let keyboard = Canvas::new(BoardCanvas {
             keys:        &self.keys,
             highlighted: highlighted_ref,
-            selected_control: self.waveform_key,
+            selected_controls: &self.waveform_keys,
             pressed: &self.pressed_keys,
             projected_labels: self.keyboard_hits_enabled.then_some(&self.computer_key_labels),
             knob_values: &self.knob_values,
@@ -1785,36 +1838,90 @@ fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'stat
 
 #[cfg(target_arch = "wasm32")]
 mod url_state {
-    use super::{App, KeyPickMode};
+    use super::{App, Cluster, KeyPickMode, label_for_waveform};
+    use crate::synth::Waveform;
     use std::sync::atomic::Ordering;
+
+    fn waveform_slug(w: Waveform) -> &'static str {
+        match w {
+            Waveform::Organ => "organ",
+            Waveform::Triangle => "triangle",
+            Waveform::Square => "square",
+            Waveform::Saw => "saw",
+            Waveform::Sine => "sine",
+            Waveform::Pulse => "pulse",
+            Waveform::Noise => "noise",
+        }
+    }
+
+    fn waveform_from_slug(s: &str) -> Option<Waveform> {
+        Some(match s {
+            "triangle" => Waveform::Triangle,
+            "square" => Waveform::Square,
+            "saw" => Waveform::Saw,
+            "sine" => Waveform::Sine,
+            "pulse" => Waveform::Pulse,
+            "noise" => Waveform::Noise,
+            _ => return None,
+        })
+    }
+
+    /// URL-safe query key for a knob, derived from its display label
+    /// ("Vib Depth" → "vib_depth"), so the URL reads as self-documenting
+    /// name=value pairs instead of a positional list.
+    fn knob_slug(label: &str) -> String {
+        label.to_lowercase().replace(' ', "_")
+    }
 
     pub fn load(app: &mut App) {
         let Some(window) = web_sys::window() else { return };
         let Ok(search) = window.location().search() else { return };
         let query = search.strip_prefix('?').unwrap_or(&search).to_string();
 
+        let mut pairs = std::collections::HashMap::new();
         for pair in query.split('&') {
             let mut parts = pair.splitn(2, '=');
-            let (Some(key), Some(value)) = (parts.next(), parts.next()) else { continue };
-            match key {
-                "knobs" => {
-                    for (slot, raw) in app.knob_values.iter_mut().zip(value.split(',')) {
-                        if let Ok(v) = raw.parse::<f32>() {
-                            *slot = v.clamp(0.0, 1.0);
-                        }
-                    }
-                }
-                "sound" => app.audio_enabled.store(value != "0", Ordering::Relaxed),
-                "keys" => app.keyboard_hits_enabled = value != "0",
-                "row" => {
-                    app.key_pick_mode = match value {
-                        "ud" => KeyPickMode::UpDown,
-                        "closest" => KeyPickMode::Closest,
-                        _ => KeyPickMode::LeftRight,
-                    };
-                }
-                _ => {}
+            if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                pairs.insert(key, value);
             }
+        }
+
+        for (i, param) in crate::synth::KNOB_PARAMS.iter().enumerate() {
+            let Some(raw) = pairs.get(knob_slug(param.label).as_str()) else { continue };
+            let Ok(real) = raw.parse::<f32>() else { continue };
+            let real = real.clamp(param.min, param.max);
+            let pos = if param.max > param.min {
+                (real - param.min) / (param.max - param.min)
+            } else {
+                0.0
+            };
+            if let Some(slot) = app.knob_values.get_mut(i) {
+                *slot = pos;
+            }
+        }
+        if let Some(&v) = pairs.get("sound") {
+            app.audio_enabled.store(v != "0", Ordering::Relaxed);
+        }
+        if let Some(&v) = pairs.get("keys") {
+            app.keyboard_hits_enabled = v != "0";
+        }
+        if let Some(&v) = pairs.get("row") {
+            app.key_pick_mode = match v {
+                "ud" => KeyPickMode::UpDown,
+                "closest" => KeyPickMode::Closest,
+                _ => KeyPickMode::LeftRight,
+            };
+        }
+        if let Some(octaves) = pairs.get("live_octave").and_then(|v| v.parse::<i8>().ok()) {
+            app.live_octave = octaves.saturating_mul(12);
+        }
+        if let Some(&v) = pairs.get("waveforms") {
+            app.waveform_keys = v.split(',')
+                .filter_map(waveform_from_slug)
+                .filter_map(label_for_waveform)
+                .filter_map(|label| app.keys.iter().find(|k| k.cluster == Cluster::Nav && k.label == label))
+                .map(|k| k.id)
+                .collect();
         }
     }
 
@@ -1823,19 +1930,47 @@ mod url_state {
         let Ok(pathname) = window.location().pathname() else { return };
         let Ok(history) = window.history() else { return };
 
-        let knobs = app.knob_values.iter()
-            .map(|v| format!("{v:.3}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let row = match app.key_pick_mode {
-            KeyPickMode::LeftRight => "lr",
-            KeyPickMode::UpDown => "ud",
-            KeyPickMode::Closest => "closest",
-        };
-        let sound = if app.audio_enabled.load(Ordering::Relaxed) { "1" } else { "0" };
-        let keys = if app.keyboard_hits_enabled { "1" } else { "0" };
+        // Only knobs actually moved from their default, and only the other
+        // settings that differ from their default, make it into the URL —
+        // a stock setup stays a bare, uncluttered URL.
+        let mut params: Vec<String> = Vec::new();
 
-        let url = format!("{pathname}?knobs={knobs}&sound={sound}&keys={keys}&row={row}");
+        for (i, param) in crate::synth::KNOB_PARAMS.iter().enumerate() {
+            let pos = app.knob_values.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let real = param.min + pos * (param.max - param.min);
+            if (real - param.default).abs() > 0.005 {
+                params.push(format!("{}={:.2}", knob_slug(param.label), real));
+            }
+        }
+
+        if !app.audio_enabled.load(Ordering::Relaxed) {
+            params.push("sound=0".to_string());
+        }
+        if app.keyboard_hits_enabled {
+            params.push("keys=1".to_string());
+        }
+        let row = match app.key_pick_mode {
+            KeyPickMode::LeftRight => None,
+            KeyPickMode::UpDown => Some("ud"),
+            KeyPickMode::Closest => Some("closest"),
+        };
+        if let Some(row) = row {
+            params.push(format!("row={row}"));
+        }
+        if app.live_octave != 0 {
+            params.push(format!("live_octave={}", app.live_octave / 12));
+        }
+        let waveforms = app.active_waveforms();
+        if !waveforms.is_empty() {
+            let slugs: Vec<&str> = waveforms.iter().map(|&w| waveform_slug(w)).collect();
+            params.push(format!("waveforms={}", slugs.join(",")));
+        }
+
+        let url = if params.is_empty() {
+            pathname
+        } else {
+            format!("{pathname}?{}", params.join("&"))
+        };
         let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url));
     }
 }
@@ -1865,23 +2000,23 @@ mod tests {
     #[test]
     fn waveform_control_toggles_back_to_default() {
         let key = KeyId(42);
-        let (active, waveform) = toggle_waveform(None, key, synth::Waveform::Triangle);
-        assert_eq!(active, Some(key));
-        assert_eq!(waveform, synth::Waveform::Triangle);
+        let mut active = HashSet::new();
 
-        let (active, waveform) = toggle_waveform(active, key, synth::Waveform::Triangle);
-        assert_eq!(active, None);
-        assert_eq!(waveform, synth::Waveform::default());
+        toggle_waveform_key(&mut active, key);
+        assert_eq!(active, HashSet::from([key]));
+
+        toggle_waveform_key(&mut active, key);
+        assert!(active.is_empty());
     }
 
     #[test]
-    fn choosing_another_waveform_keeps_a_control_active() {
+    fn choosing_another_waveform_activates_it_alongside() {
         let triangle_key = KeyId(42);
         let square_key = KeyId(43);
-        let (active, waveform) =
-            toggle_waveform(Some(triangle_key), square_key, synth::Waveform::Square);
-        assert_eq!(active, Some(square_key));
-        assert_eq!(waveform, synth::Waveform::Square);
+        let mut active = HashSet::from([triangle_key]);
+
+        toggle_waveform_key(&mut active, square_key);
+        assert_eq!(active, HashSet::from([triangle_key, square_key]));
     }
 
     #[test]

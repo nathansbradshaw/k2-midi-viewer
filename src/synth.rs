@@ -15,6 +15,9 @@ pub enum Waveform {
     Triangle,
     Square,
     Saw,
+    Sine,
+    Pulse,
+    Noise,
 }
 
 impl Waveform {
@@ -27,6 +30,15 @@ impl Waveform {
             Waveform::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
             Waveform::Square => if phase < 0.5 { 1.0 } else { -1.0 },
             Waveform::Saw => 2.0 * phase - 1.0,
+            Waveform::Sine => (phase * TAU).sin(),
+            // 25% duty cycle, brighter/thinner than the 50% Square above.
+            Waveform::Pulse => if phase < 0.25 { 1.0 } else { -1.0 },
+            // Deterministic pseudo-noise hashed from the phase, so it needs
+            // no extra per-voice RNG state to stay in step with note pitch.
+            Waveform::Noise => {
+                let x = (phase * 12_989.8).sin() * 43_758.5453;
+                2.0 * (x - x.floor()) - 1.0
+            }
         }
     }
 }
@@ -99,7 +111,10 @@ pub struct SoftSynth {
     drum_voices: Vec<DrumVoice>,
     sr:          f32,
     channels:    usize,
-    waveform:    Waveform,
+    /// Waveforms currently layered together (summed and averaged each
+    /// sample). Empty means "nothing selected", which falls back to Organ —
+    /// matching the original single-waveform default.
+    active_waveforms: Vec<Waveform>,
     master_volume: f32,
     cutoff:        f32,
     attack_s:      f32,
@@ -122,7 +137,7 @@ impl SoftSynth {
             drum_voices: Vec::new(),
             sr,
             channels,
-            waveform: Waveform::default(),
+            active_waveforms: Vec::new(),
             master_volume: KNOB_PARAMS[0].default,
             cutoff:        KNOB_PARAMS[1].default,
             attack_s:      KNOB_PARAMS[2].default,
@@ -139,8 +154,10 @@ impl SoftSynth {
         }
     }
 
-    pub fn set_waveform(&mut self, waveform: Waveform) {
-        self.waveform = waveform;
+    /// Replaces the full set of active (layered) waveforms. An empty Vec
+    /// means "nothing selected" and falls back to Organ.
+    pub fn set_active_waveforms(&mut self, waveforms: Vec<Waveform>) {
+        self.active_waveforms = waveforms;
     }
 
     /// Applies a front-panel knob move. `value` is already scaled into the
@@ -250,7 +267,7 @@ impl SoftSynth {
         let decay_rate   = (1.0 - sustain) / (self.decay_s * sr);
         let release_rate = sustain / (self.release_s * sr);
         let lp_coeff     = self.cutoff;
-        let waveform     = self.waveform;
+        let active_waveforms = &self.active_waveforms;
 
         // Glide eases `hz` toward `target_hz` on each sample; larger glide_s
         // means a slower approach. Vibrato/tremolo share one LFO phase,
@@ -279,7 +296,12 @@ impl SoftSynth {
                 let vibrato = 1.0 + vib_depth_ratio * (lfo_phase * TAU).sin();
                 v.inc = (v.hz * vibrato).max(0.0) / sr;
                 v.phase = (v.phase + v.inc).fract();
-                let wave = waveform.sample(v.phase);
+                let wave = if active_waveforms.is_empty() {
+                    Waveform::Organ.sample(v.phase)
+                } else {
+                    active_waveforms.iter().map(|w| w.sample(v.phase)).sum::<f32>()
+                        / active_waveforms.len() as f32
+                };
 
                 // One-pole low-pass filter (soften high harmonics)
                 v.lp += lp_coeff * (wave - v.lp);
@@ -394,13 +416,18 @@ mod tests {
         close(Waveform::Square.sample(0.75), -1.0);
         close(Waveform::Saw.sample(0.0), -1.0);
         close(Waveform::Saw.sample(0.5), 0.0);
+        close(Waveform::Sine.sample(0.25), 1.0);
+        close(Waveform::Sine.sample(0.75), -1.0);
+        close(Waveform::Pulse.sample(0.1), 1.0);
+        close(Waveform::Pulse.sample(0.5), -1.0);
+        assert!(Waveform::Noise.sample(0.37).abs() <= 1.0);
     }
 
     #[test]
     fn waveform_selection_does_not_replace_the_drum_engine() {
         let mut synth = SoftSynth::new(48_000.0, 2);
         synth.note_on(36, 100, DRUM_CHANNEL);
-        synth.set_waveform(Waveform::Saw);
+        synth.set_active_waveforms(vec![Waveform::Saw]);
 
         assert!(synth.voices.is_empty());
         assert_eq!(synth.drum_voices.len(), 1);

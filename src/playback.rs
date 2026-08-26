@@ -20,7 +20,7 @@ pub enum PlayCmd {
     SetAudio(bool),
     SetTrackMuted(usize, bool),
     SetOctaveOffset(i8),
-    SetWaveform(crate::synth::Waveform),
+    SetWaveforms(Vec<crate::synth::Waveform>),
     SetKnob(u8, f32), // knob index, real engine value (see synth::KNOB_PARAMS)
     LiveNoteOn(u8, u8, u8), // note, velocity, channel
     LiveNoteOff(u8, u8),    // note, channel
@@ -46,7 +46,7 @@ pub fn spawn(
     midi_conn: Option<midir::MidiOutputConnection>,
     keyboard_notes: Arc<HashSet<u8>>,
     octave_offset: i8,
-    waveform: crate::synth::Waveform,
+    waveforms: Vec<crate::synth::Waveform>,
     shared_synth: Option<Arc<Mutex<SoftSynth>>>,
 ) -> PlaybackHandle {
     // Transport controls must never block the UI thread. Seeking can generate
@@ -58,7 +58,7 @@ pub fn spawn(
     // a file is loaded. Playback shares its synth when no hardware port is active.
     let synth = midi_conn.is_none().then_some(shared_synth).flatten();
     if let Some(ref synth) = synth {
-        if let Ok(mut synth) = synth.lock() { synth.set_waveform(waveform); }
+        if let Ok(mut synth) = synth.lock() { synth.set_active_waveforms(waveforms); }
     }
 
     std::thread::spawn(move || {
@@ -219,9 +219,9 @@ fn run(
                     audio_enabled.store(v, Ordering::Relaxed);
                 }
                 Ok(PlayCmd::SetOctaveOffset(v)) => { octave_offset = v; }
-                Ok(PlayCmd::SetWaveform(waveform)) => {
+                Ok(PlayCmd::SetWaveforms(waveforms)) => {
                     if let Some(ref synth) = synth {
-                        if let Ok(mut synth) = synth.lock() { synth.set_waveform(waveform); }
+                        if let Ok(mut synth) = synth.lock() { synth.set_active_waveforms(waveforms); }
                     }
                 }
                 Ok(PlayCmd::SetKnob(index, value)) => {
@@ -327,9 +327,9 @@ fn run(
                     octave_offset = v;
                     continue;
                 }
-                Ok(PlayCmd::SetWaveform(waveform)) => {
+                Ok(PlayCmd::SetWaveforms(waveforms)) => {
                     if let Some(ref synth) = synth {
-                        if let Ok(mut synth) = synth.lock() { synth.set_waveform(waveform); }
+                        if let Ok(mut synth) = synth.lock() { synth.set_active_waveforms(waveforms); }
                     }
                     continue;
                 }

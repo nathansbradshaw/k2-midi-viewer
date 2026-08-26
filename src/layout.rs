@@ -206,15 +206,15 @@ pub fn build_layout() -> Layout {
         1.0,
         Cluster::Nav,
     ).sub("Saw"));
-    keys.push(Key::new(next_id(), "Delete", nav_col, 2.0, Cluster::Nav));
-    keys.push(Key::new(next_id(), "End", nav_col + 1.0, 2.0, Cluster::Nav));
+    keys.push(Key::new(next_id(), "Delete", nav_col, 2.0, Cluster::Nav).sub("Sine"));
+    keys.push(Key::new(next_id(), "End", nav_col + 1.0, 2.0, Cluster::Nav).sub("Pulse"));
     keys.push(Key::new(
         next_id(),
         "PgDn",
         nav_col + 2.0,
         2.0,
         Cluster::Nav,
-    ));
+    ).sub("Noise"));
 
     // --- Arrow ---
     let arrow_col = nav_col;

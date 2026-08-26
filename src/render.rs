@@ -37,8 +37,9 @@ pub struct BoardCanvas<'a> {
     pub keys:        &'a [Key],
     /// Maps KeyId → track index for color. usize::MAX = manually toggled (uses original colour).
     pub highlighted: &'a HashMap<KeyId, usize>,
-    /// A persistent control selection, independent of playback note overlays.
-    pub selected_control: Option<KeyId>,
+    /// Persistently-active control keys (e.g. layered waveform selects),
+    /// independent of playback note overlays.
+    pub selected_controls: &'a HashSet<KeyId>,
     /// Keys currently held with the pointer.
     pub pressed: &'a HashSet<KeyId>,
     /// Computer-key labels shown over the note names in performance mode.
@@ -168,7 +169,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                 frame,
                 self.keys,
                 self.highlighted,
-                self.selected_control,
+                self.selected_controls,
                 self.pressed,
                 self.projected_labels,
                 self.knob_values,
@@ -270,7 +271,7 @@ fn draw_board(
     frame: &mut Frame,
     keys: &[Key],
     highlighted: &HashMap<KeyId, usize>,
-    selected_control: Option<KeyId>,
+    selected_controls: &HashSet<KeyId>,
     pressed: &HashSet<KeyId>,
     projected_labels: Option<&HashMap<KeyId, String>>,
     knob_values: &[f32],
@@ -450,7 +451,7 @@ fn draw_board(
         let rect = key_rect_with_inset(key, inset_x);
         let lit_track = highlighted.get(&key.id).copied()
             .or_else(|| {
-                (Some(key.id) == selected_control || pressed.contains(&key.id))
+                (selected_controls.contains(&key.id) || pressed.contains(&key.id))
                     .then_some(usize::MAX)
             });
 
