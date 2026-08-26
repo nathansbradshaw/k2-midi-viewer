@@ -178,16 +178,30 @@ pub fn build_layout() -> Layout {
     );
     for c in 1..14_usize {
         let m = 66 + 2 * c as u8;
-        keys.push(
-            Key::new(
-                next_id(),
-                note_name(m),
-                0.5 + c as f32,
-                3.0,
-                note_cluster(m),
-            )
-            .note(m),
-        );
+        if c == 13 {
+            keys.push(
+                Key::new(
+                    next_id(),
+                    note_name(m),
+                    0.5 + c as f32,
+                    3.0,
+                    note_cluster(m),
+                )
+                .size(1.5, 1.0)
+                .note(m),
+            );
+        } else {
+            keys.push(
+                Key::new(
+                    next_id(),
+                    note_name(m),
+                    0.5 + c as f32,
+                    3.0,
+                    note_cluster(m),
+                )
+                .note(m),
+            );
+        }
     }
 
     // Row 4
@@ -217,7 +231,11 @@ pub fn build_layout() -> Layout {
         );
     }
     let m = 80u8;
-    keys.push(Key::new(next_id(), note_name(m), 13.5, 5.0, note_cluster(m)).note(m));
+    keys.push(
+        Key::new(next_id(), note_name(m), 13.5, 5.0, note_cluster(m))
+            .size(1.5, 1.0)
+            .note(m),
+    );
 
     // --- Nav ---
     let nav_col = NAV_COL;

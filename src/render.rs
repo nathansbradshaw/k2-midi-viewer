@@ -63,13 +63,19 @@ pub struct CanvasState {
     cache: canvas::Cache,
     pressed: Option<KeyId>,
     dragging_knob: Option<u8>,
+    /// (cursor Y, knob value) captured on mouse-down, so dragging moves the
+    /// value relative to where it already was instead of snapping it to
+    /// whatever absolute position the click happened to land on — the knob
+    /// itself sits above the pop-up track, so an absolute mapping always
+    /// started the drag off the top or bottom of the track.
+    drag_start: Option<(f32, f32)>,
 }
 
 /// Vertical extent of the pop-up slider shown while a knob is held, in
-/// canvas-local coordinates. The slider maps cursor Y to a value directly
-/// (absolute position, not relative drag delta) over a much longer travel
-/// than the knob itself — far easier to land on a precise setting than
-/// eyeballing rotation on a small dial.
+/// canvas-local coordinates. Cursor movement is mapped onto this range as a
+/// delta from the drag's starting point (see `drag_start`), over a much
+/// longer travel than the knob itself — far easier to land on a precise
+/// setting than eyeballing rotation on a small dial.
 fn knob_slider_track(knob_rect: Rectangle) -> (f32, f32) {
     let top = knob_rect.y + knob_rect.height + 22.0;
     (top, top + 160.0)
@@ -93,6 +99,13 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                         if key_rect_with_inset(key, inset_x).contains(pos) {
                             if let Some(idx) = key.knob_index {
                                 state.dragging_knob = Some(idx);
+                                let current = self.knob_values.get(idx as usize).copied().unwrap_or(0.0);
+                                // Anchor on the cursor's absolute (window) position, not the
+                                // canvas-local one — `CursorMoved` below needs to keep tracking
+                                // the drag even once the pointer leaves the canvas bounds
+                                // (e.g. dragging a top-row knob upward past the board edge).
+                                let start_y = cursor.position().map(|p| p.y).unwrap_or(pos.y);
+                                state.drag_start = Some((start_y, current));
                                 return Some(canvas::Action::capture());
                             }
                             state.pressed = Some(key.id);
@@ -106,14 +119,20 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
             }
             canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if let Some(idx) = state.dragging_knob {
-                    if let Some(pos) = cursor.position_in(bounds) {
+                    // Use the cursor's absolute position rather than
+                    // `position_in(bounds)` — once the drag starts, the
+                    // pointer is free to move outside the canvas (e.g.
+                    // above a top-row knob) and should keep being tracked.
+                    if let Some(pos) = cursor.position() {
                         let inset_x = board_inset_x(bounds.width);
                         if let Some(knob_rect) = self.keys.iter()
                             .find(|key| key.knob_index == Some(idx))
                             .map(|key| key_rect_with_inset(key, inset_x))
                         {
                             let (top, bottom) = knob_slider_track(knob_rect);
-                            let value = 1.0 - ((pos.y - top) / (bottom - top)).clamp(0.0, 1.0);
+                            let (start_y, start_value) = state.drag_start.unwrap_or((pos.y, 0.0));
+                            let delta = (pos.y - start_y) / (bottom - top);
+                            let value = (start_value - delta).clamp(0.0, 1.0);
                             return Some(
                                 canvas::Action::publish(Message::KnobChanged(idx, value))
                                     .and_capture(),
@@ -123,6 +142,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                 }
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                state.drag_start = None;
                 if state.dragging_knob.take().is_some() {
                     return Some(canvas::Action::capture());
                 }
@@ -384,26 +404,27 @@ fn draw_board(
         );
     }
 
-    // Status display sits directly left of the NUM/CAPS/SCROLL panel, both
-    // above the numpad, instead of floating alone in the middle of the deck.
-    let display_width_cols = 2.55;
-    let display_col = NUMPAD_COL - display_width_cols - 0.3;
-    let display_bezel = rounded_rect(
-        Rectangle {
-            x: inset_x + display_col * (UNIT + GAP),
-            y: BOARD_INSET_Y + 4.0,
-            width: display_width_cols * (UNIT + GAP),
-            height: 36.0,
-        },
-        5.0,
-    );
+    // Status display sits directly above the nav cluster's 3-key rows and
+    // matches the NUM/CAPS/SCROLL panel's height, so it reads as part of the
+    // same row band as that LED panel while lining up with the keys below it.
+    let display_bezel_rect = Rectangle {
+        x: inset_x + NAV_COL * (UNIT + GAP) - 8.0,
+        y: BOARD_INSET_Y - 8.0,
+        width: 3.0 * (UNIT + GAP) + 12.0,
+        height: UNIT,
+    };
+    let display_bezel = rounded_rect(display_bezel_rect, 8.0);
     frame.fill(&display_bezel, rgb(0x14, 0x11, 0x1B));
+    frame.stroke(
+        &display_bezel,
+        canvas::Stroke::default().with_color(rgb(0x63, 0x3D, 0x60)).with_width(1.0),
+    );
     let display = rounded_rect(
         Rectangle {
-            x: inset_x + (display_col + 0.2) * (UNIT + GAP),
-            y: BOARD_INSET_Y + 11.0,
-            width: 2.15 * (UNIT + GAP),
-            height: 21.0,
+            x: display_bezel_rect.x + 12.0,
+            y: display_bezel_rect.y + 12.0,
+            width: display_bezel_rect.width - 24.0,
+            height: display_bezel_rect.height - 24.0,
         },
         3.0,
     );
@@ -413,7 +434,10 @@ fn draw_board(
         .unwrap_or_else(|| "MIDI READY".to_string());
     frame.fill_text(Text {
         content: display_text,
-        position: Point::new(inset_x + (display_col + display_width_cols / 2.0) * (UNIT + GAP), BOARD_INSET_Y + 21.5),
+        position: Point::new(
+            display_bezel_rect.x + display_bezel_rect.width / 2.0,
+            display_bezel_rect.y + display_bezel_rect.height / 2.0,
+        ),
         color: rgb(0xFF, 0xB5, 0x58),
         size: iced::Pixels(8.0),
         font: CANVAS_FONT,
@@ -868,13 +892,20 @@ fn draw_knob_slider(frame: &mut Frame, knob_rect: Rectangle, value: f32, readout
     let (top, bottom) = knob_slider_track(knob_rect);
     let center_x = knob_rect.x + knob_rect.width / 2.0;
     let value = value.clamp(0.0, 1.0);
+    // Panel width must track the readout text ("Vib Depth 50.00" is the
+    // longest label+value pair) — a fixed width let long labels overflow
+    // the opaque background onto the keys behind, making them unreadable.
+    let panel_width = readout
+        .as_ref()
+        .map(|text| (text.len() as f32 * 7.2 + 28.0).max(100.0))
+        .unwrap_or(100.0);
 
     let panel = rounded_rect(
         Rectangle {
-            x: center_x - 50.0,
-            y: top - 24.0,
-            width: 100.0,
-            height: (bottom - top) + 34.0,
+            x: center_x - panel_width / 2.0,
+            y: top - 30.0,
+            width: panel_width,
+            height: (bottom - top) + 40.0,
         },
         8.0,
     );
@@ -887,9 +918,9 @@ fn draw_knob_slider(frame: &mut Frame, knob_rect: Rectangle, value: f32, readout
     if let Some(readout) = readout {
         frame.fill_text(Text {
             content: readout,
-            position: Point::new(center_x, top - 12.0),
-            color: rgb(0xFF, 0xB5, 0x58),
-            size: iced::Pixels(10.0),
+            position: Point::new(center_x, top - 14.0),
+            color: rgb(0xFF, 0xD3, 0x9B),
+            size: iced::Pixels(12.0),
             font: CANVAS_FONT,
             align_x: Horizontal::Center.into(),
             align_y: Vertical::Center,
