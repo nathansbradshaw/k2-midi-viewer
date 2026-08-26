@@ -40,6 +40,36 @@ const RELEASE_S:  f32 = 0.25;
 const VOICE_GAIN: f32 = 0.22; // per-voice scale; keeps mix below 0 dBFS
 const DRUM_GAIN:  f32 = 0.6;  // drum engine output is already near full-scale
 
+/// One of the 12 front-panel encoder knobs. `min`/`max` describe the real
+/// engine unit each knob controls (seconds, Hz, cents, ...); the knob itself
+/// only ever reports a normalized 0.0..=1.0 position.
+#[derive(Debug, Clone, Copy)]
+pub struct KnobParam {
+    pub label:   &'static str,
+    pub min:     f32,
+    pub max:     f32,
+    pub default: f32,
+}
+
+pub const KNOB_COUNT: usize = 12;
+
+/// Ordered to match the three 4-knob trays on the board: tone shaping,
+/// envelope + mix, then modulation.
+pub const KNOB_PARAMS: [KnobParam; KNOB_COUNT] = [
+    KnobParam { label: "Volume",   min: 0.0,   max: 1.5,   default: 1.0 },
+    KnobParam { label: "Cutoff",   min: 0.05,  max: 1.0,   default: 0.30 },
+    KnobParam { label: "Attack",   min: 0.001, max: 1.0,   default: ATTACK_S },
+    KnobParam { label: "Release",  min: 0.01,  max: 3.0,   default: RELEASE_S },
+    KnobParam { label: "Decay",    min: 0.01,  max: 2.0,   default: DECAY_S },
+    KnobParam { label: "Sustain",  min: 0.0,   max: 1.0,   default: SUSTAIN },
+    KnobParam { label: "Drum Vol", min: 0.0,   max: 1.5,   default: DRUM_GAIN },
+    KnobParam { label: "Pan",      min: -1.0,  max: 1.0,   default: 0.0 },
+    KnobParam { label: "Vib Rate", min: 0.5,   max: 10.0,  default: 5.0 },
+    KnobParam { label: "Vib Depth",min: 0.0,   max: 50.0,  default: 0.0 },
+    KnobParam { label: "Tremolo",  min: 0.0,   max: 1.0,   default: 0.0 },
+    KnobParam { label: "Glide",    min: 0.0,   max: 0.5,   default: 0.0 },
+];
+
 fn midi_to_hz(note: u8) -> f32 {
     440.0 * 2f32.powf((note as f32 - 69.0) / 12.0)
 }
@@ -48,13 +78,15 @@ fn midi_to_hz(note: u8) -> f32 {
 enum Stage { Attack, Decay, Sustain, Release, Done }
 
 struct Voice {
-    note:  u8,
-    vel:   f32, // 0–1
-    phase: f32, // 0–1
-    inc:   f32, // phase increment per sample
-    env:   f32, // current envelope level
-    stage: Stage,
-    lp:    f32, // one-pole low-pass state
+    note:      u8,
+    vel:       f32, // 0–1
+    phase:     f32, // 0–1
+    inc:       f32, // phase increment per sample
+    hz:        f32, // current (glide-smoothed) frequency
+    target_hz: f32, // frequency the note actually asked for
+    env:       f32, // current envelope level
+    stage:     Stage,
+    lp:        f32, // one-pole low-pass state
 }
 
 struct DrumVoice {
@@ -68,6 +100,19 @@ pub struct SoftSynth {
     sr:          f32,
     channels:    usize,
     waveform:    Waveform,
+    master_volume: f32,
+    cutoff:        f32,
+    attack_s:      f32,
+    decay_s:       f32,
+    sustain:       f32,
+    release_s:     f32,
+    drum_gain:     f32,
+    pan:           f32,
+    vibrato_rate:  f32,
+    vibrato_depth: f32,
+    tremolo_depth: f32,
+    glide_s:       f32,
+    lfo_phase:     f32,
 }
 
 impl SoftSynth {
@@ -78,11 +123,47 @@ impl SoftSynth {
             sr,
             channels,
             waveform: Waveform::default(),
+            master_volume: KNOB_PARAMS[0].default,
+            cutoff:        KNOB_PARAMS[1].default,
+            attack_s:      KNOB_PARAMS[2].default,
+            release_s:     KNOB_PARAMS[3].default,
+            decay_s:       KNOB_PARAMS[4].default,
+            sustain:       KNOB_PARAMS[5].default,
+            drum_gain:     KNOB_PARAMS[6].default,
+            pan:           KNOB_PARAMS[7].default,
+            vibrato_rate:  KNOB_PARAMS[8].default,
+            vibrato_depth: KNOB_PARAMS[9].default,
+            tremolo_depth: KNOB_PARAMS[10].default,
+            glide_s:       KNOB_PARAMS[11].default,
+            lfo_phase: 0.0,
         }
     }
 
     pub fn set_waveform(&mut self, waveform: Waveform) {
         self.waveform = waveform;
+    }
+
+    /// Applies a front-panel knob move. `value` is already scaled into the
+    /// knob's real engine unit (see `KNOB_PARAMS`), not the raw 0.0..=1.0
+    /// dial position.
+    pub fn set_knob(&mut self, index: u8, value: f32) {
+        let Some(param) = KNOB_PARAMS.get(index as usize) else { return };
+        let value = value.clamp(param.min, param.max);
+        match index {
+            0 => self.master_volume = value,
+            1 => self.cutoff = value,
+            2 => self.attack_s = value,
+            3 => self.release_s = value,
+            4 => self.decay_s = value,
+            5 => self.sustain = value,
+            6 => self.drum_gain = value,
+            7 => self.pan = value,
+            8 => self.vibrato_rate = value,
+            9 => self.vibrato_depth = value,
+            10 => self.tremolo_depth = value,
+            11 => self.glide_s = value,
+            _ => {}
+        }
     }
 
     pub fn note_on(&mut self, note: u8, velocity: u8, channel: u8) {
@@ -100,12 +181,16 @@ impl SoftSynth {
             return;
         }
 
+        let target_hz = midi_to_hz(note);
+
         // Retrigger existing voice so the same key doesn't build up
         if let Some(v) = self.voices.iter_mut()
             .find(|v| v.note == note && v.stage != Stage::Done)
         {
-            v.vel   = velocity as f32 / 127.0;
-            v.stage = Stage::Attack;
+            v.vel       = velocity as f32 / 127.0;
+            v.stage     = Stage::Attack;
+            v.target_hz = target_hz;
+            if self.glide_s <= 0.0 { v.hz = target_hz; }
             return;
         }
         // Steal the quietest-or-oldest voice if polyphony is full
@@ -114,14 +199,26 @@ impl SoftSynth {
                 .unwrap_or(0);
             self.voices.remove(pos);
         }
+        // Portamento: start from whatever the most recently active voice was
+        // playing instead of jumping straight to the new pitch.
+        let start_hz = if self.glide_s > 0.0 {
+            self.voices.iter().rev()
+                .find(|v| v.stage != Stage::Done)
+                .map(|v| v.hz)
+                .unwrap_or(target_hz)
+        } else {
+            target_hz
+        };
         self.voices.push(Voice {
             note,
-            vel:   velocity as f32 / 127.0,
-            phase: 0.0,
-            inc:   midi_to_hz(note) / self.sr,
-            env:   0.0,
-            stage: Stage::Attack,
-            lp:    0.0,
+            vel:       velocity as f32 / 127.0,
+            phase:     0.0,
+            inc:       start_hz / self.sr,
+            hz:        start_hz,
+            target_hz,
+            env:       0.0,
+            stage:     Stage::Attack,
+            lp:        0.0,
         });
     }
 
@@ -147,20 +244,40 @@ impl SoftSynth {
         data.fill(0.0);
 
         let sr = self.sr;
-        let ch = self.channels;
-        let attack_rate  = 1.0 / (ATTACK_S  * sr);
-        let decay_rate   = (1.0 - SUSTAIN) / (DECAY_S  * sr);
-        let release_rate = SUSTAIN / (RELEASE_S * sr);
-        let lp_coeff     = 0.30f32; // ≈ 6 kHz cutoff at 44.1 kHz
+        let ch = self.channels.max(1);
+        let sustain      = self.sustain;
+        let attack_rate  = 1.0 / (self.attack_s * sr);
+        let decay_rate   = (1.0 - sustain) / (self.decay_s * sr);
+        let release_rate = sustain / (self.release_s * sr);
+        let lp_coeff     = self.cutoff;
         let waveform     = self.waveform;
+
+        // Glide eases `hz` toward `target_hz` on each sample; larger glide_s
+        // means a slower approach. Vibrato/tremolo share one LFO phase,
+        // recomputed per-sample from a fixed base so voices agree on it
+        // without needing a mutable running phase inside this loop.
+        let glide_coeff    = if self.glide_s <= 0.0001 { 1.0 } else { (1.0 / (self.glide_s * sr)).min(1.0) };
+        let vib_depth_ratio = 2f32.powf(self.vibrato_depth / 1200.0) - 1.0;
+        let lfo_inc         = self.vibrato_rate / sr;
+        let tremolo_depth   = self.tremolo_depth;
+        let (pan_l, pan_r) = if self.pan <= 0.0 {
+            (1.0, 1.0 + self.pan)
+        } else {
+            (1.0 - self.pan, 1.0)
+        };
 
         for v in &mut self.voices {
             if v.stage == Stage::Done { continue; }
             let gain = v.vel * VOICE_GAIN;
 
-            for frame in data.chunks_exact_mut(ch) {
+            for (i, frame) in data.chunks_exact_mut(ch).enumerate() {
+                let lfo_phase = (self.lfo_phase + i as f32 * lfo_inc).fract();
+
                 // Waveform selection only applies to melodic voices. Drum
                 // voices are rendered by their dedicated sampler below.
+                v.hz = v.hz + (v.target_hz - v.hz) * glide_coeff;
+                let vibrato = 1.0 + vib_depth_ratio * (lfo_phase * TAU).sin();
+                v.inc = (v.hz * vibrato).max(0.0) / sr;
                 v.phase = (v.phase + v.inc).fract();
                 let wave = waveform.sample(v.phase);
 
@@ -175,9 +292,9 @@ impl SoftSynth {
                     }
                     Stage::Decay   => {
                         let e = v.env - decay_rate;
-                        if e <= SUSTAIN { v.stage = Stage::Sustain; SUSTAIN } else { e }
+                        if e <= sustain { v.stage = Stage::Sustain; sustain } else { e }
                     }
-                    Stage::Sustain => SUSTAIN,
+                    Stage::Sustain => sustain,
                     Stage::Release => {
                         let e = v.env - release_rate;
                         if e <= 0.0 { v.stage = Stage::Done; 0.0 } else { e }
@@ -185,13 +302,18 @@ impl SoftSynth {
                     Stage::Done    => 0.0,
                 };
 
-                let s = v.lp * v.env * gain;
-                for samp in frame.iter_mut() { *samp += s; }
+                let tremolo = 1.0 - tremolo_depth * 0.5 * (1.0 - (lfo_phase * TAU).cos());
+                let s = v.lp * v.env * gain * tremolo;
+                for (ci, samp) in frame.iter_mut().enumerate() {
+                    let g = match ci { 0 => pan_l, 1 => pan_r, _ => 1.0 };
+                    *samp += s * g;
+                }
             }
         }
+        self.lfo_phase = (self.lfo_phase + (data.len() / ch) as f32 * lfo_inc).fract();
 
         for d in &mut self.drum_voices {
-            let gain = d.vel * DRUM_GAIN;
+            let gain = d.vel * self.drum_gain;
             for frame in data.chunks_exact_mut(ch) {
                 let s = d.sampler.next_value() * gain;
                 for samp in frame.iter_mut() { *samp += s; }
@@ -199,8 +321,8 @@ impl SoftSynth {
         }
         self.drum_voices.retain(|d| !d.sampler.is_finished());
 
-        // Soft clip to prevent digital distortion
-        for s in data.iter_mut() { *s = s.clamp(-1.0, 1.0); }
+        // Master volume, then soft clip to prevent digital distortion
+        for s in data.iter_mut() { *s = (*s * self.master_volume).clamp(-1.0, 1.0); }
 
         self.voices.retain(|v| v.stage != Stage::Done);
     }

@@ -21,6 +21,7 @@ pub enum PlayCmd {
     SetTrackMuted(usize, bool),
     SetOctaveOffset(i8),
     SetWaveform(crate::synth::Waveform),
+    SetKnob(u8, f32), // knob index, real engine value (see synth::KNOB_PARAMS)
     LiveNoteOn(u8, u8, u8), // note, velocity, channel
     LiveNoteOff(u8, u8),    // note, channel
 }
@@ -223,6 +224,11 @@ fn run(
                         if let Ok(mut synth) = synth.lock() { synth.set_waveform(waveform); }
                     }
                 }
+                Ok(PlayCmd::SetKnob(index, value)) => {
+                    if let Some(ref synth) = synth {
+                        if let Ok(mut synth) = synth.lock() { synth.set_knob(index, value); }
+                    }
+                }
                 Ok(PlayCmd::LiveNoteOn(note, velocity, channel)) => {
                     if audio_enabled.load(Ordering::Relaxed) {
                         live_note_on(&mut midi_conn, &synth, note, velocity, channel);
@@ -324,6 +330,12 @@ fn run(
                 Ok(PlayCmd::SetWaveform(waveform)) => {
                     if let Some(ref synth) = synth {
                         if let Ok(mut synth) = synth.lock() { synth.set_waveform(waveform); }
+                    }
+                    continue;
+                }
+                Ok(PlayCmd::SetKnob(index, value)) => {
+                    if let Some(ref synth) = synth {
+                        if let Ok(mut synth) = synth.lock() { synth.set_knob(index, value); }
                     }
                     continue;
                 }

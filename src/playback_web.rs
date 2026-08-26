@@ -18,6 +18,7 @@ pub enum PlayCmd {
     SetTrackMuted(usize, bool),
     SetOctaveOffset(i8),
     SetWaveform(crate::synth::Waveform),
+    SetKnob(u8, f32),
     LiveNoteOn(u8, u8, u8),
     LiveNoteOff(u8, u8),
 }
@@ -235,6 +236,13 @@ impl WebPlayback {
                     if let Some(ref synth) = self.synth {
                         if let Ok(mut synth) = synth.lock() {
                             synth.set_waveform(waveform);
+                        }
+                    }
+                }
+                PlayCmd::SetKnob(index, value) => {
+                    if let Some(ref synth) = self.synth {
+                        if let Ok(mut synth) = synth.lock() {
+                            synth.set_knob(index, value);
                         }
                     }
                 }

@@ -1347,6 +1347,8 @@ dependencies = [
  "midly",
  "rfd",
  "spin_sleep",
+ "wasm-bindgen",
+ "web-sys",
  "web-time",
 ]
 

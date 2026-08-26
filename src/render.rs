@@ -5,7 +5,7 @@ use iced::widget::canvas::{self, Frame, Geometry, Path, Text};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 use crate::key::{Cluster, Key, KeyId};
-use crate::layout::{NAV_COL, NUMPAD_COL};
+use crate::layout::{KNOB_COL_STEP, NAV_COL, NUMPAD_COL};
 use crate::Message;
 
 /// Per-track highlight palette — cycled for files with more than 8 tracks.
@@ -28,6 +28,8 @@ const BOARD_INSET_Y: f32 = 28.0;
 const NUMPAD_Y_OFFSET: f32 = UNIT + GAP;
 const BOARD_LAYOUT_WIDTH: f32 = 1330.0;
 const MIN_BOARD_INSET_X: f32 = 8.0;
+/// Pixels of vertical drag needed to sweep a knob across its full 0.0..=1.0 range.
+const KNOB_DRAG_RANGE_PX: f32 = 150.0;
 
 fn board_inset_x(width: f32) -> f32 {
     ((width - BOARD_LAYOUT_WIDTH) / 2.0).max(MIN_BOARD_INSET_X)
@@ -43,12 +45,16 @@ pub struct BoardCanvas<'a> {
     pub pressed: &'a HashSet<KeyId>,
     /// Computer-key labels shown over the note names in performance mode.
     pub projected_labels: Option<&'a HashMap<KeyId, String>>,
+    /// Current 0.0..=1.0 dial position of each of the 12 encoder knobs.
+    pub knob_values: &'a [f32],
 }
 
 #[derive(Default)]
 pub struct CanvasState {
     cache: canvas::Cache,
     pressed: Option<KeyId>,
+    dragging_knob: Option<u8>,
+    drag_last_y: f32,
 }
 
 impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
@@ -67,6 +73,11 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                     let inset_x = board_inset_x(bounds.width);
                     for key in self.keys {
                         if key_rect_with_inset(key, inset_x).contains(pos) {
+                            if let Some(idx) = key.knob_index {
+                                state.dragging_knob = Some(idx);
+                                state.drag_last_y = pos.y;
+                                return Some(canvas::Action::capture());
+                            }
                             state.pressed = Some(key.id);
                             return Some(
                                 canvas::Action::publish(Message::KeyPressed(key.id))
@@ -76,7 +87,24 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                     }
                 }
             }
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if let Some(idx) = state.dragging_knob {
+                    if let Some(pos) = cursor.position_in(bounds) {
+                        let delta = (state.drag_last_y - pos.y) / KNOB_DRAG_RANGE_PX;
+                        state.drag_last_y = pos.y;
+                        let current = self.knob_values.get(idx as usize).copied().unwrap_or(0.0);
+                        let value = (current + delta).clamp(0.0, 1.0);
+                        return Some(
+                            canvas::Action::publish(Message::KnobChanged(idx, value))
+                                .and_capture(),
+                        );
+                    }
+                }
+            }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if state.dragging_knob.take().is_some() {
+                    return Some(canvas::Action::capture());
+                }
                 if let Some(id) = state.pressed.take() {
                     return Some(
                         canvas::Action::publish(Message::KeyReleased(id))
@@ -98,6 +126,9 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         state.cache.clear(); // highlighted set changes every 16 ms during playback
+        let active_knob = state.dragging_knob.map(|idx| {
+            (idx, self.knob_values.get(idx as usize).copied().unwrap_or(0.0))
+        });
         let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
             draw_board(
                 frame,
@@ -106,6 +137,8 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                 self.selected_control,
                 self.pressed,
                 self.projected_labels,
+                self.knob_values,
+                active_knob,
             );
         });
         vec![geometry]
@@ -200,6 +233,8 @@ fn draw_board(
     selected_control: Option<KeyId>,
     pressed: &HashSet<KeyId>,
     projected_labels: Option<&HashMap<KeyId, String>>,
+    knob_values: &[f32],
+    active_knob: Option<(u8, f32)>,
 ) {
     let size = frame.size();
     let inset_x = board_inset_x(size.width);
@@ -267,13 +302,17 @@ fn draw_board(
     }
 
     // Encoder banks, status display and identity plate mirror the top deck of
-    // the physical board without inventing additional interactive controls.
-    for start in [0.0f32, 4.0] {
+    // the physical board. The 12 knobs are grouped into 3 trays of 4, packed
+    // at KNOB_COL_STEP pitch so the whole row still fits the footprint the
+    // original 8 full-width knobs occupied.
+    let tray_width = 4.0 * KNOB_COL_STEP;
+    for group in 0..3 {
+        let start = group as f32 * tray_width;
         let tray = rounded_rect(
             Rectangle {
                 x: inset_x + start * (UNIT + GAP) - 6.0,
                 y: BOARD_INSET_Y - 6.0,
-                width: 4.0 * (UNIT + GAP) + 8.0,
+                width: tray_width * (UNIT + GAP) + 8.0,
                 height: UNIT + 12.0,
             },
             7.0,
@@ -313,11 +352,19 @@ fn draw_board(
         3.0,
     );
     frame.fill(&display, rgb(0x28, 0x17, 0x18));
+    let display_text = active_knob
+        .and_then(|(idx, value)| {
+            crate::synth::KNOB_PARAMS.get(idx as usize).map(|param| {
+                let real = param.min + value.clamp(0.0, 1.0) * (param.max - param.min);
+                format!("{} {:.2}", param.label, real)
+            })
+        })
+        .unwrap_or_else(|| "MIDI READY".to_string());
     frame.fill_text(Text {
-        content: "MIDI READY".to_string(),
+        content: display_text,
         position: Point::new(inset_x + 13.63 * (UNIT + GAP), BOARD_INSET_Y + 21.5),
         color: rgb(0xFF, 0xB5, 0x58),
-        size: iced::Pixels(9.0),
+        size: iced::Pixels(8.0),
         font: CANVAS_FONT,
         align_x: Horizontal::Center.into(),
         align_y: Vertical::Center,
@@ -377,7 +424,11 @@ fn draw_board(
             });
 
         if key.is_knob {
-            draw_knob(frame, rect);
+            let value = key.knob_index
+                .and_then(|idx| knob_values.get(idx as usize))
+                .copied()
+                .unwrap_or(0.0);
+            draw_knob(frame, rect, value);
             continue;
         }
 
@@ -467,7 +518,7 @@ fn rounded_rect(rect: Rectangle, radius: f32) -> Path {
     })
 }
 
-fn draw_knob(frame: &mut Frame, rect: Rectangle) {
+fn draw_knob(frame: &mut Frame, rect: Rectangle, value: f32) {
     let center = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
     let radius = rect.width.min(rect.height) / 2.0 - 4.0;
 
@@ -486,13 +537,22 @@ fn draw_knob(frame: &mut Frame, rect: Rectangle) {
     let knurl = Path::circle(center, radius * 0.55);
     frame.fill(&knurl, rgb(0x24, 0x1E, 0x2D));
 
-    let notch = Path::new(|b| {
-        b.move_to(Point::new(center.x, center.y - radius * 0.8));
-        b.line_to(Point::new(center.x - 3.0, center.y - radius * 0.4));
-        b.line_to(Point::new(center.x + 3.0, center.y - radius * 0.4));
-        b.close();
+    // Sweeps -135°..+135° (bottom-left to bottom-right through the top) as
+    // `value` goes 0.0..=1.0, mirroring a real knob's travel.
+    let angle = -135f32.to_radians() + value.clamp(0.0, 1.0) * 270f32.to_radians();
+    let (s, c) = (angle.sin(), angle.cos());
+    let inner = radius * 0.35;
+    let outer = radius * 0.85;
+    let tip = Point::new(center.x + s * outer, center.y - c * outer);
+    let pointer = Path::new(|b| {
+        b.move_to(Point::new(center.x + s * inner, center.y - c * inner));
+        b.line_to(tip);
     });
-    frame.fill(&notch, rgb(0xFF, 0x76, 0x7B));
+    frame.stroke(
+        &pointer,
+        canvas::Stroke::default().with_color(rgb(0xFF, 0x76, 0x7B)).with_width(2.5),
+    );
+    frame.fill(&Path::circle(tip, 2.5), rgb(0xFF, 0x76, 0x7B));
 }
 
 #[cfg(test)]

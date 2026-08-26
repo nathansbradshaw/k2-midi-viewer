@@ -263,6 +263,7 @@ struct App {
     keyboard_hits_enabled: bool,
     computer_keys_down:    HashMap<ComputerKey, Vec<KeyId>>,
     computer_key_labels:   HashMap<KeyId, String>,
+    knob_values:           [f32; synth::KNOB_COUNT], // 0.0..=1.0 dial position per knob
 
     // MIDI file
     midi_file:        Option<midi::MidiFile>,
@@ -322,7 +323,7 @@ impl Default for App {
             .collect();
         let computer_key_labels = computer_projection_labels(&layout.keys);
 
-        App {
+        let mut app = App {
             window_size: Size::new(1520.0, 900.0),
 
             keyboard_notes:        layout.keyboard_notes,
@@ -338,6 +339,13 @@ impl Default for App {
             keyboard_hits_enabled: false,
             computer_keys_down:    HashMap::new(),
             computer_key_labels,
+            knob_values: {
+                let mut values = [0.0f32; synth::KNOB_COUNT];
+                for (slot, param) in values.iter_mut().zip(synth::KNOB_PARAMS.iter()) {
+                    *slot = (param.default - param.min) / (param.max - param.min);
+                }
+                values
+            },
 
             midi_file:        None,
             octave_offset:    0,
@@ -364,7 +372,9 @@ impl Default for App {
 
             staff_selection:           None,
             selection_highlight_cache: HashMap::new(),
-        }
+        };
+        apply_url_settings(&mut app);
+        app
     }
 }
 
@@ -378,6 +388,7 @@ pub enum Message {
     // keyboard
     KeyPressed(KeyId),
     KeyReleased(KeyId),
+    KnobChanged(u8, f32), // knob index, 0.0..=1.0 dial position
     ToggleKeyboardHits,
     ComputerKeyPressed(ComputerKey),
     ComputerKeyReleased(ComputerKey),
@@ -955,11 +966,30 @@ impl App {
                 Task::none()
             }
 
+            Message::KnobChanged(index, pos) => {
+                let pos = pos.clamp(0.0, 1.0);
+                if let Some(slot) = self.knob_values.get_mut(index as usize) {
+                    *slot = pos;
+                }
+                if let Some(param) = synth::KNOB_PARAMS.get(index as usize) {
+                    let value = param.min + pos * (param.max - param.min);
+                    if let Some(ref synth) = self.soft_synth {
+                        if let Ok(mut synth) = synth.lock() { synth.set_knob(index, value); }
+                    }
+                    if let Some(ref h) = self.playback_handle {
+                        h.cmd_tx.send(PlayCmd::SetKnob(index, value)).ok();
+                    }
+                }
+                self.sync_url();
+                Task::none()
+            }
+
             Message::ToggleKeyboardHits => {
                 if self.keyboard_hits_enabled {
                     self.release_computer_keys();
                 }
                 self.keyboard_hits_enabled = !self.keyboard_hits_enabled;
+                self.sync_url();
                 Task::none()
             }
 
@@ -1090,6 +1120,7 @@ impl App {
                 self.rebuild_closest_key_map();
                 if self.show_all_notes { self.rebuild_all_notes_cache(); }
                 if self.staff_selection.is_some() { self.rebuild_selection_highlight(); }
+                self.sync_url();
                 Task::none()
             }
             Message::ToggleAllNotes => {
@@ -1232,6 +1263,7 @@ impl App {
                         if let Ok(mut synth) = synth.lock() { synth.all_notes_off(); }
                     }
                 }
+                self.sync_url();
                 Task::none()
             }
 
@@ -1563,6 +1595,7 @@ impl App {
             selected_control: self.waveform_key,
             pressed: &self.pressed_keys,
             projected_labels: self.keyboard_hits_enabled.then_some(&self.computer_key_labels),
+            knob_values: &self.knob_values,
         })
         .width(Length::Fill)
         .height(390.0);
@@ -1670,6 +1703,90 @@ fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'stat
         .height(Length::Fill)
         .style(panel_style)
         .into()
+}
+
+// ---------------------------------------------------------------------------
+// URL settings (web build only)
+//
+// Knob positions and a few global toggles are mirrored into the query string
+// via `history.replaceState` (no navigation, no new history entry) so a
+// reload or a shared link restores them. Per-file state like track mutes
+// isn't included since it's meaningless without the file itself.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+mod url_state {
+    use super::{App, KeyPickMode};
+    use std::sync::atomic::Ordering;
+
+    pub fn load(app: &mut App) {
+        let Some(window) = web_sys::window() else { return };
+        let Ok(search) = window.location().search() else { return };
+        let query = search.strip_prefix('?').unwrap_or(&search).to_string();
+
+        for pair in query.split('&') {
+            let mut parts = pair.splitn(2, '=');
+            let (Some(key), Some(value)) = (parts.next(), parts.next()) else { continue };
+            match key {
+                "knobs" => {
+                    for (slot, raw) in app.knob_values.iter_mut().zip(value.split(',')) {
+                        if let Ok(v) = raw.parse::<f32>() {
+                            *slot = v.clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                "sound" => app.audio_enabled.store(value != "0", Ordering::Relaxed),
+                "keys" => app.keyboard_hits_enabled = value != "0",
+                "row" => {
+                    app.key_pick_mode = match value {
+                        "ud" => KeyPickMode::UpDown,
+                        "closest" => KeyPickMode::Closest,
+                        _ => KeyPickMode::LeftRight,
+                    };
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn save(app: &App) {
+        let Some(window) = web_sys::window() else { return };
+        let Ok(pathname) = window.location().pathname() else { return };
+        let Ok(history) = window.history() else { return };
+
+        let knobs = app.knob_values.iter()
+            .map(|v| format!("{v:.3}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let row = match app.key_pick_mode {
+            KeyPickMode::LeftRight => "lr",
+            KeyPickMode::UpDown => "ud",
+            KeyPickMode::Closest => "closest",
+        };
+        let sound = if app.audio_enabled.load(Ordering::Relaxed) { "1" } else { "0" };
+        let keys = if app.keyboard_hits_enabled { "1" } else { "0" };
+
+        let url = format!("{pathname}?knobs={knobs}&sound={sound}&keys={keys}&row={row}");
+        let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url));
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn apply_url_settings(app: &mut App) {
+    url_state::load(app);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_url_settings(_app: &mut App) {}
+
+impl App {
+    #[cfg(target_arch = "wasm32")]
+    fn sync_url(&self) {
+        url_state::save(self);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_url(&self) {}
 }
 
 #[cfg(test)]

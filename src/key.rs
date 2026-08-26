@@ -23,6 +23,7 @@ pub struct Key {
     pub h:         f32,
     pub cluster:   Cluster,
     pub is_knob:   bool,
+    pub knob_index: Option<u8>,
 }
 
 impl Key {
@@ -44,6 +45,7 @@ impl Key {
             h:         1.0,
             cluster,
             is_knob:   false,
+            knob_index: None,
         }
     }
 
@@ -63,8 +65,9 @@ impl Key {
         self
     }
 
-    pub const fn knob(mut self) -> Self {
+    pub const fn knob(mut self, index: u8) -> Self {
         self.is_knob = true;
+        self.knob_index = Some(index);
         self
     }
 }
