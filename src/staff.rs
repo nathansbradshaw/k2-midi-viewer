@@ -10,8 +10,6 @@ use crate::render::CANVAS_FONT;
 use crate::synth::DRUM_CHANNEL;
 use crate::Message;
 
-pub const STAFF_HEIGHT: f32 = 180.0;
-
 const LINE_SPACING: f32 = 12.0;
 const HALF_SPACE: f32 = LINE_SPACING / 2.0;
 const CLEF_WIDTH: f32 = 60.0;
@@ -176,6 +174,21 @@ fn track_note_color(track: usize, is_active: bool, is_past: bool) -> Color {
     }
 }
 
+/// Lowest and highest raw MIDI note the melodic keyboard's physical keys cover.
+/// This is fixed hardware geometry — the octave shift moves *songs* into this
+/// range (see `note_fits`), it never moves the keyboard itself, so unlike
+/// `note_fits` this does not apply `octave_offset`. Notes plotted on the staff
+/// are shown in shifted (post-transposition) space, which is exactly the space
+/// this raw range lives in, so the two compare directly.
+fn keyboard_range(keyboard_notes: &HashSet<u8>) -> Option<(u8, u8)> {
+    keyboard_notes
+        .iter()
+        .fold(None, |acc, &n| match acc {
+            None           => Some((n, n)),
+            Some((lo, hi)) => Some((lo.min(n), hi.max(n))),
+        })
+}
+
 /// Whether `note` lands on a physical key — a drum pad for channel 10, or the
 /// octave-shifted melodic keyboard otherwise. Mirrors the logic in main.rs's
 /// rebuild_all_notes_cache, kept in sync so the staff and keyboard agree.
@@ -304,6 +317,26 @@ fn draw_staff(
 
     let tick_x  = |t: u64|  -> f32 { playhead_x + (t as f64 - pos as f64) as f32 * ppt };
     let slot_y  = |s: i32|  -> f32 { ref_y - s as f32 * HALF_SPACE };
+
+    // ── Keyboard range band ─────────────────────────────────────────────────
+    // Shades the staff positions the physical keyboard can actually reach.
+    // Notes are plotted post-octave-shift, which is the same space the raw
+    // keyboard range lives in, so this band is independent of octave_offset.
+    if let Some((lo, hi)) = keyboard_range(keyboard_notes) {
+        let y_top    = slot_y(staff_slot(hi)) - HALF_SPACE;
+        let y_bottom = slot_y(staff_slot(lo)) + HALF_SPACE;
+        let range_col = Color::from_rgb8(0xA5, 0xD6, 0xA7);
+        frame.fill(
+            &Path::rectangle(Point::new(CLEF_WIDTH, y_top), Size::new(w - CLEF_WIDTH, y_bottom - y_top)),
+            Color { a: 0.10, ..range_col },
+        );
+        for y in [y_top, y_bottom] {
+            frame.stroke(
+                &Path::line(Point::new(CLEF_WIDTH - 4.0, y), Point::new(w, y)),
+                canvas::Stroke::default().with_color(Color { a: 0.55, ..range_col }).with_width(1.0),
+            );
+        }
+    }
 
     // ── Selection band ──────────────────────────────────────────────────────
     if let Some((s, e)) = selection {

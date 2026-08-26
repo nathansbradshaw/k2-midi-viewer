@@ -1578,7 +1578,7 @@ impl App {
             drum_note_to_key:  &self.drum_note_to_key,
         })
         .width(Length::Fill)
-        .height(staff::STAFF_HEIGHT);
+        .height(Length::Fill);
 
         // ── Selection info ────────────────────────────────────────────────
         let selection_row: Element<Message> = if has_file {
@@ -1590,7 +1590,8 @@ impl App {
         };
 
         let content = column![file_row, transport_row, track_row, keyboard, staff, selection_row]
-            .spacing(section_gap);
+            .spacing(section_gap)
+            .height(Length::Fill);
 
         container(content)
             .padding(outer_pad)
