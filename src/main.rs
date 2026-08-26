@@ -52,6 +52,16 @@ fn app_theme_for(_: &App) -> Theme {
     app_theme()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn app_icon() -> iced::window::Icon {
+    iced::window::icon::from_rgba(
+        include_bytes!("../assets/desktop/k2-app-icon-v3.rgba").to_vec(),
+        256,
+        256,
+    )
+    .expect("the embedded K2 app icon must be 256x256 RGBA")
+}
+
 fn panel_style(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(PANEL_BG)),
@@ -130,7 +140,11 @@ fn main() -> iced::Result {
         .theme(app_theme_for)
         .subscription(App::subscription);
     #[cfg(not(target_arch = "wasm32"))]
-    let app = app.window_size(Size::new(1520.0, 900.0));
+    let app = app.window(iced::window::Settings {
+        size: Size::new(1520.0, 900.0),
+        icon: Some(app_icon()),
+        ..Default::default()
+    });
     app.run()
 }
 
@@ -330,9 +344,38 @@ struct App {
     midi_port_names: Vec<String>,
     midi_port_idx:   usize,
 
+    // Chrome Web MIDI (browser build only)
+    #[cfg(target_arch = "wasm32")]
+    web_midi_access: Option<playback::MidiAccessHandle>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_inputs: Vec<playback::MidiPortInfo>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_outputs: Vec<playback::MidiPortInfo>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_input_id: Option<String>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_output_id: Option<String>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_input: Option<playback::MidiInputConnection>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_output: Option<playback::MidiOutputConnection>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_events: Arc<Mutex<VecDeque<Vec<u8>>>>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_active_notes: HashMap<(u8, u8), KeyId>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_highlighted: HashMap<KeyId, usize>,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_pending: bool,
+    #[cfg(target_arch = "wasm32")]
+    web_midi_status: Option<String>,
+
     // staff selection
     staff_selection:          Option<(u64, u64)>,
     selection_highlight_cache: HashMap<KeyId, usize>,
+    /// One or more chronological play-step numbers displayed on each key while
+    /// a staff range is selected. Notes that begin together share a step.
+    selection_play_order:      HashMap<KeyId, Vec<usize>>,
 }
 
 impl Default for App {
@@ -406,8 +449,34 @@ impl Default for App {
             midi_port_idx:   0,
             midi_port_names,
 
+            #[cfg(target_arch = "wasm32")]
+            web_midi_access: None,
+            #[cfg(target_arch = "wasm32")]
+            web_midi_inputs: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            web_midi_outputs: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            web_midi_input_id: None,
+            #[cfg(target_arch = "wasm32")]
+            web_midi_output_id: None,
+            #[cfg(target_arch = "wasm32")]
+            web_midi_input: None,
+            #[cfg(target_arch = "wasm32")]
+            web_midi_output: None,
+            #[cfg(target_arch = "wasm32")]
+            web_midi_events: Arc::new(Mutex::new(VecDeque::new())),
+            #[cfg(target_arch = "wasm32")]
+            web_midi_active_notes: HashMap::new(),
+            #[cfg(target_arch = "wasm32")]
+            web_midi_highlighted: HashMap::new(),
+            #[cfg(target_arch = "wasm32")]
+            web_midi_pending: false,
+            #[cfg(target_arch = "wasm32")]
+            web_midi_status: None,
+
             staff_selection:           None,
             selection_highlight_cache: HashMap::new(),
+            selection_play_order:      HashMap::new(),
         };
         apply_url_settings(&mut app);
         app
@@ -454,6 +523,14 @@ pub enum Message {
     ToggleAudio,
     // port
     NextPort,
+    #[cfg(target_arch = "wasm32")]
+    RequestWebMidi,
+    #[cfg(target_arch = "wasm32")]
+    WebMidiReady(Result<web_sys::MidiAccess, String>),
+    #[cfg(target_arch = "wasm32")]
+    NextWebMidiInput,
+    #[cfg(target_arch = "wasm32")]
+    NextWebMidiOutput,
     // staff selection
     StaffSelectionChanged(Option<(u64, u64)>),
 }
@@ -723,6 +800,72 @@ fn shortest_path_keys(
     chosen
 }
 
+/// Converts the actual note-on ticks assigned to each highlighted key into
+/// human-friendly, one-based play steps. Equal ticks deliberately receive the
+/// same number because those keys form a chord; a key used again later keeps
+/// every step number so repeated notes are not lost in the highlight map.
+fn play_order_from_ticks(
+    mut ticks_by_key: HashMap<KeyId, Vec<u64>>,
+) -> HashMap<KeyId, Vec<usize>> {
+    let mut ticks: Vec<u64> = ticks_by_key.values().flatten().copied().collect();
+    ticks.sort_unstable();
+    ticks.dedup();
+
+    ticks_by_key
+        .drain()
+        .map(|(key, mut key_ticks)| {
+            key_ticks.sort_unstable();
+            key_ticks.dedup();
+            let steps = key_ticks
+                .into_iter()
+                .filter_map(|tick| ticks.binary_search(&tick).ok().map(|index| index + 1))
+                .collect();
+            (key, steps)
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MidiInputAction {
+    NoteOn { note: u8, velocity: u8, channel: u8 },
+    NoteOff { note: u8, channel: u8 },
+    AllNotesOff { channel: u8 },
+}
+
+/// Reduces the MIDI messages relevant to this viewer to explicit actions.
+/// Note On with velocity zero is the MIDI-standard spelling of Note Off.
+fn parse_midi_input(data: &[u8]) -> Option<MidiInputAction> {
+    let status = *data.first()?;
+    let channel = status & 0x0F;
+    match status & 0xF0 {
+        0x90 if data.len() >= 3 && data[2] > 0 => Some(MidiInputAction::NoteOn {
+            note: data[1] & 0x7F,
+            velocity: data[2] & 0x7F,
+            channel,
+        }),
+        0x80 | 0x90 if data.len() >= 3 => Some(MidiInputAction::NoteOff {
+            note: data[1] & 0x7F,
+            channel,
+        }),
+        0xB0 if data.len() >= 3 && matches!(data[1], 120 | 123) => {
+            Some(MidiInputAction::AllNotesOff { channel })
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn next_web_midi_port(
+    current: Option<&str>,
+    ports: &[playback::MidiPortInfo],
+) -> Option<String> {
+    match current.and_then(|id| ports.iter().position(|port| port.id == id)) {
+        Some(index) if index + 1 < ports.len() => Some(ports[index + 1].id.clone()),
+        Some(_) => None,
+        None => ports.first().map(|port| port.id.clone()),
+    }
+}
+
 impl App {
     #[cfg(target_arch = "wasm32")]
     fn ensure_web_audio(&mut self) {
@@ -745,6 +888,173 @@ impl App {
                 self.sync_engine_state();
             }
             Err(error) => self.audio_error = Some(error),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn refresh_web_midi_ports(&mut self, auto_select: bool) {
+        let Some(access) = self.web_midi_access.as_ref() else { return };
+        let inputs = access.input_ports();
+        let outputs = access.output_ports();
+
+        let input_id = self.web_midi_input_id.as_deref()
+            .filter(|id| inputs.iter().any(|port| port.id == *id))
+            .map(str::to_string)
+            .or_else(|| auto_select.then(|| inputs.first().map(|port| port.id.clone())).flatten());
+        let output_id = self.web_midi_output_id.as_deref()
+            .filter(|id| outputs.iter().any(|port| port.id == *id))
+            .map(str::to_string)
+            .or_else(|| auto_select.then(|| outputs.first().map(|port| port.id.clone())).flatten());
+
+        let reconnect_input = input_id != self.web_midi_input_id
+            || (input_id.is_some() && self.web_midi_input.is_none());
+        let reconnect_output = output_id != self.web_midi_output_id
+            || (output_id.is_some() && self.web_midi_output.is_none());
+        self.web_midi_inputs = inputs;
+        self.web_midi_outputs = outputs;
+
+        if reconnect_input {
+            self.select_web_midi_input(input_id);
+        }
+        if reconnect_output {
+            self.select_web_midi_output(output_id);
+        }
+
+        if self.web_midi_inputs.is_empty() && self.web_midi_outputs.is_empty() {
+            self.web_midi_status = Some("MIDI access granted — no devices found".to_string());
+        } else if self.web_midi_status.as_deref().is_none_or(|s| !s.starts_with("MIDI error:")) {
+            self.web_midi_status = Some(format!(
+                "MIDI connected · {} input{} · {} output{}",
+                self.web_midi_inputs.len(),
+                if self.web_midi_inputs.len() == 1 { "" } else { "s" },
+                self.web_midi_outputs.len(),
+                if self.web_midi_outputs.len() == 1 { "" } else { "s" },
+            ));
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn select_web_midi_input(&mut self, id: Option<String>) {
+        self.release_web_midi_input_notes(None);
+        self.web_midi_input = None;
+        self.web_midi_input_id = id.clone();
+        let Some(id) = id else { return };
+        let Some(access) = self.web_midi_access.as_ref() else { return };
+        match access.connect_input(&id, Arc::clone(&self.web_midi_events)) {
+            Ok(connection) => self.web_midi_input = Some(connection),
+            Err(error) => {
+                self.web_midi_input_id = None;
+                self.web_midi_status = Some(format!("MIDI error: {error}"));
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn select_web_midi_output(&mut self, id: Option<String>) {
+        if let Some(output) = self.web_midi_output.take() {
+            output.all_notes_off();
+        }
+        self.web_midi_output_id = id.clone();
+        self.web_midi_output = id.as_deref().and_then(|id| {
+            self.web_midi_access.as_ref().and_then(|access| {
+                match access.connect_output(id) {
+                    Ok(output) => Some(output),
+                    Err(error) => {
+                        self.web_midi_status = Some(format!("MIDI error: {error}"));
+                        None
+                    }
+                }
+            })
+        });
+        if self.web_midi_output.is_none() && id.is_some() {
+            self.web_midi_output_id = None;
+        }
+
+        if let Some(ref synth) = self.soft_synth {
+            if let Ok(mut synth) = synth.lock() { synth.all_notes_off(); }
+        }
+        if let Some(ref handle) = self.playback_handle {
+            handle.cmd_tx
+                .send(PlayCmd::SetMidiOutput(self.web_midi_output.clone()))
+                .ok();
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn web_midi_key_for_note(&self, note: u8, channel: u8) -> Option<(KeyId, bool)> {
+        if channel == synth::DRUM_CHANNEL {
+            return self.drum_note_to_key.get(&note).copied().map(|key| (key, false));
+        }
+        if let Some(keys) = self.note_to_all_keys.get(&note) {
+            let key = if self.key_pick_mode == KeyPickMode::Closest {
+                pick_key_nearest(keys, &self.key_pos, &self.web_midi_highlighted)
+            } else {
+                pick_key_fixed(keys, self.key_pick_mode)
+            }?;
+            return Some((key, false));
+        }
+        let nearest = self.nearest_keyboard_note(note)?;
+        let keys = self.note_to_all_keys.get(&nearest)?;
+        let key = if self.key_pick_mode == KeyPickMode::Closest {
+            pick_key_nearest(keys, &self.key_pos, &self.web_midi_highlighted)
+        } else {
+            pick_key_fixed(keys, self.key_pick_mode)
+        }?;
+        Some((key, true))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn handle_web_midi_input(&mut self, action: MidiInputAction) {
+        match action {
+            MidiInputAction::NoteOn { note, velocity, channel } => {
+                if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Some(ref synth) = self.soft_synth {
+                        if let Ok(mut synth) = synth.lock() { synth.note_on(note, velocity, channel); }
+                    }
+                }
+                if let Some((key, warning)) = self.web_midi_key_for_note(note, channel) {
+                    if let Some(old_key) = self.web_midi_active_notes.insert((channel, note), key) {
+                        if old_key != key && !self.web_midi_active_notes.values().any(|&id| id == old_key) {
+                            self.web_midi_highlighted.remove(&old_key);
+                        }
+                    }
+                    self.web_midi_highlighted.insert(
+                        key,
+                        if warning { usize::MAX - 1 } else { usize::MAX },
+                    );
+                }
+            }
+            MidiInputAction::NoteOff { note, channel } => {
+                if let Some(ref synth) = self.soft_synth {
+                    if let Ok(mut synth) = synth.lock() { synth.note_off(note, channel); }
+                }
+                if let Some(key) = self.web_midi_active_notes.remove(&(channel, note)) {
+                    if !self.web_midi_active_notes.values().any(|&id| id == key) {
+                        self.web_midi_highlighted.remove(&key);
+                    }
+                }
+            }
+            MidiInputAction::AllNotesOff { channel } => self.release_web_midi_input_notes(Some(channel)),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn release_web_midi_input_notes(&mut self, channel: Option<u8>) {
+        let notes: Vec<(u8, u8)> = self.web_midi_active_notes.keys().copied()
+            .filter(|(active_channel, _)| channel.is_none_or(|channel| *active_channel == channel))
+            .collect();
+        for (active_channel, note) in notes {
+            if let Some(ref synth) = self.soft_synth {
+                if let Ok(mut synth) = synth.lock() { synth.note_off(note, active_channel); }
+            }
+            if let Some(key) = self.web_midi_active_notes.remove(&(active_channel, note)) {
+                if !self.web_midi_active_notes.values().any(|&id| id == key) {
+                    self.web_midi_highlighted.remove(&key);
+                }
+            }
+        }
+        if channel.is_none() {
+            self.web_midi_events.lock().map(|mut queue| queue.clear()).ok();
         }
     }
 
@@ -850,10 +1160,12 @@ impl App {
     /// selected on the keyboard.
     fn rebuild_selection_highlight(&mut self) {
         self.selection_highlight_cache.clear();
+        self.selection_play_order.clear();
         let Some(ref f) = self.midi_file else { return };
         let Some((s, e)) = self.staff_selection else { return };
         let e = e.max(s + 1);
         let in_range = |note: &midi::Note| note.start_tick < e && note.end_tick > s;
+        let mut play_ticks: HashMap<KeyId, Vec<u64>> = HashMap::new();
 
         if self.key_pick_mode == KeyPickMode::Closest {
             for note in &f.notes {
@@ -863,6 +1175,7 @@ impl App {
                 if note.channel == synth::DRUM_CHANNEL {
                     if let Some(&kid) = self.drum_note_to_key.get(&note.midi_note) {
                         self.selection_highlight_cache.insert(kid, note.track);
+                        play_ticks.entry(kid).or_default().push(note.start_tick);
                     }
                     continue;
                 }
@@ -870,6 +1183,7 @@ impl App {
                 let shifted = (note.midi_note as i16 + self.octave_offset as i16).clamp(0, 127) as u8;
                 if let Some(&kid) = self.closest_key_for_note.get(&shifted) {
                     self.selection_highlight_cache.insert(kid, note.track);
+                    play_ticks.entry(kid).or_default().push(note.start_tick);
                 }
             }
         } else {
@@ -880,6 +1194,7 @@ impl App {
                 if note.channel == synth::DRUM_CHANNEL {
                     if let Some(&kid) = self.drum_note_to_key.get(&note.midi_note) {
                         self.selection_highlight_cache.insert(kid, note.track);
+                        play_ticks.entry(kid).or_default().push(note.start_tick);
                     }
                     continue;
                 }
@@ -888,6 +1203,7 @@ impl App {
                 if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                     if let Some(kid) = pick_key_fixed(kids, self.key_pick_mode) {
                         self.selection_highlight_cache.insert(kid, note.track);
+                        play_ticks.entry(kid).or_default().push(note.start_tick);
                     }
                 }
             }
@@ -910,10 +1226,13 @@ impl App {
                     };
                     if let Some(kid) = kid {
                         self.selection_highlight_cache.entry(kid).or_insert(usize::MAX - 1);
+                        play_ticks.entry(kid).or_default().push(note.start_tick);
                     }
                 }
             }
         }
+
+        self.selection_play_order = play_order_from_ticks(play_ticks);
     }
 
     /// Tells the playback thread about a new octave offset, so it can tell which
@@ -999,8 +1318,15 @@ impl App {
             if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Some(ref h) = self.playback_handle {
                     h.cmd_tx.send(PlayCmd::LiveNoteOn(shifted, 108, channel)).ok();
-                } else if let Some(ref synth) = self.soft_synth {
-                    if let Ok(mut synth) = synth.lock() { synth.note_on(shifted, 108, channel); }
+                } else {
+                    #[cfg(target_arch = "wasm32")]
+                    if let Some(ref output) = self.web_midi_output {
+                        let _ = output.send(&[0x90 | (channel & 0x0F), shifted, 108]);
+                        return;
+                    }
+                    if let Some(ref synth) = self.soft_synth {
+                        if let Ok(mut synth) = synth.lock() { synth.note_on(shifted, 108, channel); }
+                    }
                 }
             }
         }
@@ -1014,8 +1340,15 @@ impl App {
         if let Some((note, channel)) = self.live_note_overrides.remove(&id) {
             if let Some(ref h) = self.playback_handle {
                 h.cmd_tx.send(PlayCmd::LiveNoteOff(note, channel)).ok();
-            } else if let Some(ref synth) = self.soft_synth {
-                if let Ok(mut synth) = synth.lock() { synth.note_off(note, channel); }
+            } else {
+                #[cfg(target_arch = "wasm32")]
+                if let Some(ref output) = self.web_midi_output {
+                    let _ = output.send(&[0x80 | (channel & 0x0F), note, 0]);
+                    return;
+                }
+                if let Some(ref synth) = self.soft_synth {
+                    if let Ok(mut synth) = synth.lock() { synth.note_off(note, channel); }
+                }
             }
         }
     }
@@ -1160,12 +1493,16 @@ impl App {
                 self.highlighted.clear();
                 self.staff_selection = None;
                 self.selection_highlight_cache.clear();
+                self.selection_play_order.clear();
 
                 // Drop any existing playback thread
                 self.playback_handle = None;
 
                 // Spawn a new idle playback thread ready for this file
+                #[cfg(not(target_arch = "wasm32"))]
                 let conn = playback::open_output(self.midi_port_idx);
+                #[cfg(target_arch = "wasm32")]
+                let conn = self.web_midi_output.clone();
                 let handle = playback::spawn(
                     Arc::new(file.clone()),
                     Arc::clone(&self.playback_events),
@@ -1359,6 +1696,23 @@ impl App {
                         }
                     }
                 }
+
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let ports_changed = self.web_midi_access.as_ref()
+                        .is_some_and(playback::MidiAccessHandle::take_ports_changed);
+                    if ports_changed {
+                        self.refresh_web_midi_ports(false);
+                    }
+                    let midi_messages: Vec<Vec<u8>> = self.web_midi_events.lock()
+                        .map(|mut queue| queue.drain(..).collect())
+                        .unwrap_or_default();
+                    for data in midi_messages {
+                        if let Some(action) = parse_midi_input(&data) {
+                            self.handle_web_midi_input(action);
+                        }
+                    }
+                }
                 Task::none()
             }
 
@@ -1368,6 +1722,10 @@ impl App {
                 if let Some(ref h) = self.playback_handle {
                     h.cmd_tx.send(PlayCmd::SetAudio(!was)).ok();
                 } else if was {
+                    #[cfg(target_arch = "wasm32")]
+                    if let Some(ref output) = self.web_midi_output {
+                        output.all_notes_off();
+                    }
                     if let Some(ref synth) = self.soft_synth {
                         if let Ok(mut synth) = synth.lock() { synth.all_notes_off(); }
                     }
@@ -1381,6 +1739,60 @@ impl App {
                 if !self.midi_port_names.is_empty() {
                     self.midi_port_idx = (self.midi_port_idx + 1) % self.midi_port_names.len();
                 }
+                Task::none()
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            Message::RequestWebMidi => {
+                self.ensure_web_audio();
+                self.web_midi_pending = true;
+                self.web_midi_status = Some("Waiting for Chrome MIDI permission…".to_string());
+                match playback::request_midi_access() {
+                    Ok(promise) => Task::perform(
+                        async move { playback::resolve_midi_access(promise).await },
+                        Message::WebMidiReady,
+                    ),
+                    Err(error) => {
+                        self.web_midi_pending = false;
+                        self.web_midi_status = Some(format!("MIDI error: {error}"));
+                        Task::none()
+                    }
+                }
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            Message::WebMidiReady(result) => {
+                self.web_midi_pending = false;
+                match result {
+                    Ok(access) => {
+                        self.web_midi_access = Some(playback::MidiAccessHandle::new(access));
+                        self.web_midi_status = None;
+                        self.refresh_web_midi_ports(true);
+                    }
+                    Err(error) => {
+                        self.web_midi_status = Some(format!("MIDI error: {error}"));
+                    }
+                }
+                Task::none()
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            Message::NextWebMidiInput => {
+                let id = next_web_midi_port(
+                    self.web_midi_input_id.as_deref(),
+                    &self.web_midi_inputs,
+                );
+                self.select_web_midi_input(id);
+                Task::none()
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            Message::NextWebMidiOutput => {
+                let id = next_web_midi_port(
+                    self.web_midi_output_id.as_deref(),
+                    &self.web_midi_outputs,
+                );
+                self.select_web_midi_output(id);
                 Task::none()
             }
 
@@ -1433,7 +1845,11 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let playback = if self.playback_handle.is_some() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let needs_poll = self.playback_handle.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let needs_poll = self.playback_handle.is_some() || self.web_midi_access.is_some();
+        let playback = if needs_poll {
             iced::time::every(std::time::Duration::from_millis(16))
                 .map(|_| Message::PollPlayback)
         } else {
@@ -1538,6 +1954,64 @@ impl App {
             .style(control_style)
             .on_press(Message::NextPort);
 
+        #[cfg(target_arch = "wasm32")]
+        let web_midi_controls: Element<Message> = if self.web_midi_access.is_none() {
+            let label = if self.web_midi_pending { "Connecting MIDI…" } else { "Connect MIDI" };
+            let connect = button(text(label).size(12))
+                .padding([8, 12])
+                .style(control_style)
+                .on_press_maybe((!self.web_midi_pending).then_some(Message::RequestWebMidi));
+            let status = self.web_midi_status.as_deref().unwrap_or("");
+            column![
+                connect,
+                text(status).size(9).color(if status.starts_with("MIDI error:") {
+                    Color::from_rgb(0.98, 0.48, 0.38)
+                } else {
+                    TEXT_MUTED
+                }),
+            ]
+            .spacing(2)
+            .into()
+        } else {
+            let port_name = |ports: &[playback::MidiPortInfo], selected: Option<&str>| {
+                selected
+                    .and_then(|id| ports.iter().find(|port| port.id == id))
+                    .map(|port| {
+                        let mut name: String = port.name.chars().take(22).collect();
+                        if port.name.chars().count() > 22 { name.push('…'); }
+                        name
+                    })
+                    .unwrap_or_else(|| "Off".to_string())
+            };
+            let input_name = port_name(&self.web_midi_inputs, self.web_midi_input_id.as_deref());
+            let output_name = port_name(&self.web_midi_outputs, self.web_midi_output_id.as_deref());
+            let input = button(text(format!("MIDI IN · {input_name}")).size(11))
+                .padding([7, 10])
+                .style(if self.web_midi_input_id.is_some() { accent_style } else { control_style })
+                .on_press_maybe(
+                    (!self.web_midi_inputs.is_empty() || self.web_midi_input_id.is_some())
+                        .then_some(Message::NextWebMidiInput),
+                );
+            let output = button(text(format!("MIDI OUT · {output_name}")).size(11))
+                .padding([7, 10])
+                .style(if self.web_midi_output_id.is_some() { accent_style } else { control_style })
+                .on_press_maybe(
+                    (!self.web_midi_outputs.is_empty() || self.web_midi_output_id.is_some())
+                        .then_some(Message::NextWebMidiOutput),
+                );
+            let status = self.web_midi_status.as_deref().unwrap_or("");
+            column![
+                row![input, output].spacing(5),
+                text(status).size(9).color(if status.starts_with("MIDI error:") {
+                    Color::from_rgb(0.98, 0.48, 0.38)
+                } else {
+                    TEXT_MUTED
+                }),
+            ]
+            .spacing(2)
+            .into()
+        };
+
         let identity = column![
             text("K2").size(24).color(TEXT_MAIN),
             text("MIDI PERFORMANCE VIEWER").size(10).color(TEXT_MUTED),
@@ -1550,7 +2024,7 @@ impl App {
             .spacing(row_gap)
             .align_y(Alignment::Center);
         #[cfg(target_arch = "wasm32")]
-        let header_top = row![identity, open_btn]
+        let header_top = row![identity, web_midi_controls, open_btn]
             .spacing(row_gap)
             .align_y(Alignment::Center);
         let header_bottom = row![
@@ -1585,16 +2059,31 @@ impl App {
             );
 
         let audio_label = if let Some(error) = &self.audio_error {
+            #[cfg(target_arch = "wasm32")]
+            if self.web_midi_output.is_some() {
+                if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                    "MIDI output on".to_string()
+                } else {
+                    "MIDI output muted".to_string()
+                }
+            } else {
+                format!("Sound unavailable · {error}")
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             format!("Sound unavailable · {error}")
         } else if self.audio_enabled.load(std::sync::atomic::Ordering::Relaxed) {
             "Sound on".to_string()
         } else {
             "Muted".to_string()
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let audio_available = self.soft_synth.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let audio_available = self.soft_synth.is_some() || self.web_midi_output.is_some();
         let audio_btn = button(text(audio_label).size(14))
             .padding([8, 12])
             .style(control_style)
-            .on_press_maybe(self.soft_synth.is_some().then_some(Message::ToggleAudio));
+            .on_press_maybe(audio_available.then_some(Message::ToggleAudio));
 
         let keyboard_hits_label = if self.keyboard_hits_enabled {
             "Computer keys: on"
@@ -1710,10 +2199,16 @@ impl App {
         } else {
             &self.highlighted
         };
+        #[cfg(target_arch = "wasm32")]
+        let overlay_highlighted = Some(&self.web_midi_highlighted);
+        #[cfg(not(target_arch = "wasm32"))]
+        let overlay_highlighted = None;
 
         let keyboard = Canvas::new(BoardCanvas {
             keys:        &self.keys,
             highlighted: highlighted_ref,
+            overlay_highlighted,
+            play_order: self.staff_selection.is_some().then_some(&self.selection_play_order),
             selected_controls: &self.waveform_keys,
             pressed: &self.pressed_keys,
             projected_labels: self.keyboard_hits_enabled.then_some(&self.computer_key_labels),
@@ -1802,8 +2297,8 @@ fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'stat
         ),
         (
             "Sound / MIDI OUT",
-            "\"Sound on\" mutes the built-in synth; the MIDI OUT button (desktop only) \
-             cycles between connected MIDI output ports.",
+            "\"Sound on\" mutes the built-in synth or selected MIDI output. In Chrome, \
+             use Connect MIDI, then cycle the separate MIDI IN and MIDI OUT selectors.",
         ),
         (
             "Staff view",
@@ -2045,5 +2540,59 @@ mod tests {
         assert_eq!(mapped.len(), 2);
         assert!(mapped.iter().all(|id| layout.drum_note_to_key.values()
             .any(|drum_key| drum_key == id)));
+    }
+
+    #[test]
+    fn selection_play_order_groups_chords_and_numbers_onsets() {
+        let first = KeyId(1);
+        let chord_mate = KeyId(2);
+        let last = KeyId(3);
+        let order = play_order_from_ticks(HashMap::from([
+            (first, vec![120]),
+            (chord_mate, vec![120]),
+            (last, vec![360]),
+        ]));
+
+        assert_eq!(order.get(&first), Some(&vec![1]));
+        assert_eq!(order.get(&chord_mate), Some(&vec![1]));
+        assert_eq!(order.get(&last), Some(&vec![2]));
+    }
+
+    #[test]
+    fn selection_play_order_keeps_repeated_uses_of_one_key() {
+        let repeated = KeyId(1);
+        let middle = KeyId(2);
+        let order = play_order_from_ticks(HashMap::from([
+            (repeated, vec![100, 300, 300]),
+            (middle, vec![200]),
+        ]));
+
+        assert_eq!(order.get(&repeated), Some(&vec![1, 3]));
+        assert_eq!(order.get(&middle), Some(&vec![2]));
+    }
+
+    #[test]
+    fn midi_input_parses_note_on_note_off_and_zero_velocity() {
+        assert_eq!(
+            parse_midi_input(&[0x92, 64, 100]),
+            Some(MidiInputAction::NoteOn { note: 64, velocity: 100, channel: 2 }),
+        );
+        assert_eq!(
+            parse_midi_input(&[0x82, 64, 0]),
+            Some(MidiInputAction::NoteOff { note: 64, channel: 2 }),
+        );
+        assert_eq!(
+            parse_midi_input(&[0x92, 64, 0]),
+            Some(MidiInputAction::NoteOff { note: 64, channel: 2 }),
+        );
+    }
+
+    #[test]
+    fn midi_input_honors_channel_all_notes_off() {
+        assert_eq!(
+            parse_midi_input(&[0xB7, 123, 0]),
+            Some(MidiInputAction::AllNotesOff { channel: 7 }),
+        );
+        assert_eq!(parse_midi_input(&[0xB7, 1, 64]), None);
     }
 }

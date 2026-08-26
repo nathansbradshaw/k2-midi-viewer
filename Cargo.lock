@@ -1343,11 +1343,13 @@ dependencies = [
  "console_error_panic_hook",
  "cpal",
  "iced",
+ "js-sys",
  "midir",
  "midly",
  "rfd",
  "spin_sleep",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "web-time",
 ]

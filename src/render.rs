@@ -37,6 +37,12 @@ pub struct BoardCanvas<'a> {
     pub keys:        &'a [Key],
     /// Maps KeyId → track index for color. usize::MAX = manually toggled (uses original colour).
     pub highlighted: &'a HashMap<KeyId, usize>,
+    /// Optional live overlay (for browser MIDI input) drawn above the base
+    /// playback/selection highlight without requiring a temporary merged map.
+    pub overlay_highlighted: Option<&'a HashMap<KeyId, usize>>,
+    /// Chronological play steps to badge onto highlighted keys while a staff
+    /// range is selected. Chords share a number; repeated keys have several.
+    pub play_order:  Option<&'a HashMap<KeyId, Vec<usize>>>,
     /// Persistently-active control keys (e.g. layered waveform selects),
     /// independent of playback note overlays.
     pub selected_controls: &'a HashSet<KeyId>,
@@ -169,6 +175,8 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                 frame,
                 self.keys,
                 self.highlighted,
+                self.overlay_highlighted,
+                self.play_order,
                 self.selected_controls,
                 self.pressed,
                 self.projected_labels,
@@ -271,6 +279,8 @@ fn draw_board(
     frame: &mut Frame,
     keys: &[Key],
     highlighted: &HashMap<KeyId, usize>,
+    overlay_highlighted: Option<&HashMap<KeyId, usize>>,
+    play_order: Option<&HashMap<KeyId, Vec<usize>>>,
     selected_controls: &HashSet<KeyId>,
     pressed: &HashSet<KeyId>,
     projected_labels: Option<&HashMap<KeyId, String>>,
@@ -449,7 +459,8 @@ fn draw_board(
 
     for key in keys {
         let rect = key_rect_with_inset(key, inset_x);
-        let lit_track = highlighted.get(&key.id).copied()
+        let lit_track = overlay_highlighted.and_then(|overlay| overlay.get(&key.id)).copied()
+            .or_else(|| highlighted.get(&key.id).copied())
             .or_else(|| {
                 (selected_controls.contains(&key.id) || pressed.contains(&key.id))
                     .then_some(usize::MAX)
@@ -540,6 +551,10 @@ fn draw_board(
                 ..Text::default()
             });
         }
+
+        if let Some(steps) = play_order.and_then(|order| order.get(&key.id)) {
+            draw_play_order_badge(frame, rect, steps);
+        }
     }
 
     // Pop-up slider for whichever knob is currently held, drawn last so it
@@ -552,6 +567,50 @@ fn draw_board(
             draw_knob_slider(frame, knob_rect, value, knob_readout(idx, value));
         }
     }
+}
+
+/// Draws a compact, high-contrast sequence badge in the key's upper-right
+/// corner. A repeated key reads e.g. "2·5"; simultaneous chord keys all show
+/// the same number.
+fn draw_play_order_badge(frame: &mut Frame, key_rect: Rectangle, steps: &[usize]) {
+    if steps.is_empty() { return; }
+
+    let label = steps
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join("·");
+    let char_count = label.chars().count().max(1) as f32;
+    let width = (char_count * 6.0 + 10.0).clamp(18.0, key_rect.width - 8.0);
+    let height = 18.0;
+    let badge = Rectangle {
+        x: key_rect.x + key_rect.width - width - 4.0,
+        y: key_rect.y + 4.0,
+        width,
+        height,
+    };
+    let path = rounded_rect(badge, height / 2.0);
+    frame.fill(&path, Color::from_rgba8(0x12, 0x0E, 0x18, 0.92));
+    frame.stroke(
+        &path,
+        canvas::Stroke::default()
+            .with_color(Color::from_rgba8(0xFF, 0xFF, 0xFF, 0.78))
+            .with_width(1.0),
+    );
+
+    // Long repeated-note sequences shrink to stay inside their key rather
+    // than spilling across adjacent labels.
+    let font_size = (width / (char_count * 0.62)).clamp(6.0, 10.0);
+    frame.fill_text(Text {
+        content: label,
+        position: Point::new(badge.x + badge.width / 2.0, badge.y + badge.height / 2.0),
+        color: Color::WHITE,
+        size: iced::Pixels(font_size),
+        font: CANVAS_FONT,
+        align_x: Horizontal::Center.into(),
+        align_y: Vertical::Center,
+        ..Text::default()
+    });
 }
 
 /// Formats a knob's current position as "<label> <real value>" (e.g.
