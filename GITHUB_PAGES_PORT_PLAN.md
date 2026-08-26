@@ -1,5 +1,15 @@
 # GitHub Pages Port Plan
 
+> **Implemented (August 2026).** The released port uses Trunk, iced's wasm
+> renderer, rfd's in-browser byte loading, CPAL's Web Audio backend, and a
+> UI-timer playback engine in `src/playback_web.rs`. External MIDI output stays
+> native-only. See `README.md` for local and deployment commands.
+
+The sections below are the original design notes. Two early assumptions changed
+during implementation: iced 0.13's browser renderer failed during canvas startup
+and was upgraded to iced 0.14, while CPAL 0.15 already provided the Web Audio
+output backend, so a separate synth rewrite was not necessary.
+
 ## Scope
 
 The primary use case: open a `.mid` file in the browser and watch it play on the

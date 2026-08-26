@@ -4,9 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced       = { version = "0.13", features = ["canvas", "tokio"] }
+iced       = { version = "0.14", default-features = false, features = ["canvas", "crisp", "fira-sans", "tokio"] }
 midly      = "0.5"
 rfd        = "0.17"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iced       = { version = "0.14", default-features = false, features = ["wgpu"] }
+cpal       = "0.15"
 midir      = "0.11"
 spin_sleep = "1"
-cpal       = "0.15"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "webgl", "web-colors"] }
+console_error_panic_hook = "0.1"
+cpal = { version = "0.15", features = ["wasm-bindgen"] }
+web-time = "1"

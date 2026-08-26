@@ -211,21 +211,36 @@ impl SoftSynth {
 // ---------------------------------------------------------------------------
 
 /// Starts a cpal output stream backed by the soft synth.
-/// Returns None if no audio device is available (rare) or format is unsupported.
-pub fn start_soft_synth() -> Option<(Arc<Mutex<SoftSynth>>, cpal::Stream)> {
+/// Returns a descriptive error when no output device or supported stream is available.
+pub fn start_soft_synth() -> Result<(Arc<Mutex<SoftSynth>>, cpal::Stream), String> {
     let host   = cpal::default_host();
-    let device = host.default_output_device()?;
-    let config = device.default_output_config().ok()?;
+    let device = host.default_output_device()
+        .ok_or_else(|| "Audio output is unavailable".to_string())?;
 
-    let sr  = config.sample_rate().0 as f32;
-    let ch  = config.channels() as usize;
+    // CPAL's Web Audio backend reports a synthetic "best" default with 32
+    // channels. Browsers commonly reject or fail to route that layout to a
+    // stereo destination, leaving the app with no synth at all. Request the
+    // actual layout K2 renders instead.
+    #[cfg(target_arch = "wasm32")]
+    let config = cpal::StreamConfig {
+        channels: 2,
+        sample_rate: cpal::SampleRate(44_100),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let config: cpal::StreamConfig = device.default_output_config()
+        .map_err(|error| format!("audio configuration failed: {error}"))?
+        .into();
+
+    let sr  = config.sample_rate.0 as f32;
+    let ch  = config.channels as usize;
 
     let synth    = Arc::new(Mutex::new(SoftSynth::new(sr, ch)));
     let synth_cb = Arc::clone(&synth);
 
     // Only f32 streams are needed; CoreAudio (macOS) always supports f32.
     let stream = device.build_output_stream(
-        &config.into(),
+        &config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             match synth_cb.try_lock() {
                 Ok(mut s) => s.render(data),
@@ -234,10 +249,11 @@ pub fn start_soft_synth() -> Option<(Arc<Mutex<SoftSynth>>, cpal::Stream)> {
         },
         |err| eprintln!("soft synth audio error: {err}"),
         None,
-    ).ok()?;
+    ).map_err(|error| format!("audio stream creation failed: {error}"))?;
 
-    stream.play().ok()?;
-    Some((synth, stream))
+    stream.play()
+        .map_err(|error| format!("audio start failed: {error}"))?;
+    Ok((synth, stream))
 }
 
 #[cfg(test)]

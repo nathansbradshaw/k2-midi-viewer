@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -66,11 +65,9 @@ pub struct PlayEvent {
 // Load & parse
 // ---------------------------------------------------------------------------
 
-pub fn load(path: PathBuf) -> Result<MidiFile, String> {
-    let bytes = std::fs::read(&path).map_err(|e| format!("read error: {e}"))?;
-
+pub fn load_bytes(bytes: &[u8]) -> Result<MidiFile, String> {
     // midly borrows from the byte slice; we extract everything into owned types
-    let smf = midly::Smf::parse(&bytes).map_err(|e| format!("parse error: {e}"))?;
+    let smf = midly::Smf::parse(bytes).map_err(|e| format!("parse error: {e}"))?;
 
     let ticks_per_beat = match smf.header.timing {
         midly::Timing::Metrical(t) => t.as_int(),

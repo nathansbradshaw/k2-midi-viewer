@@ -23,6 +23,7 @@ pub const TRACK_COLORS: &[(u8, u8, u8)] = &[
 
 pub const UNIT: f32 = 54.0;
 pub const GAP: f32 = 4.0;
+pub(crate) const CANVAS_FONT: iced::Font = iced::Font::with_name("Fira Sans");
 const BOARD_INSET_Y: f32 = 28.0;
 const NUMPAD_Y_OFFSET: f32 = UNIT + GAP;
 const BOARD_LAYOUT_WIDTH: f32 = 1330.0;
@@ -56,10 +57,10 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
     fn update(
         &self,
         state: &mut Self::State,
-        event: canvas::Event,
+        event: &canvas::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> (canvas::event::Status, Option<Message>) {
+    ) -> Option<canvas::Action<Message>> {
         match event {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let Some(pos) = cursor.position_in(bounds) {
@@ -67,9 +68,9 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                     for key in self.keys {
                         if key_rect_with_inset(key, inset_x).contains(pos) {
                             state.pressed = Some(key.id);
-                            return (
-                                canvas::event::Status::Captured,
-                                Some(Message::KeyPressed(key.id)),
+                            return Some(
+                                canvas::Action::publish(Message::KeyPressed(key.id))
+                                    .and_capture(),
                             );
                         }
                     }
@@ -77,15 +78,15 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 if let Some(id) = state.pressed.take() {
-                    return (
-                        canvas::event::Status::Captured,
-                        Some(Message::KeyReleased(id)),
+                    return Some(
+                        canvas::Action::publish(Message::KeyReleased(id))
+                            .and_capture(),
                     );
                 }
             }
             _ => {}
         }
-        (canvas::event::Status::Ignored, None)
+        None
     }
 
     fn draw(
@@ -289,6 +290,7 @@ fn draw_board(
         position: Point::new(inset_x + 8.45 * (UNIT + GAP), BOARD_INSET_Y + 12.0),
         color: rgb(0xF0, 0xC9, 0x9A),
         size: iced::Pixels(12.0),
+        font: CANVAS_FONT,
         ..Text::default()
     });
     let display_bezel = rounded_rect(
@@ -316,8 +318,9 @@ fn draw_board(
         position: Point::new(inset_x + 13.63 * (UNIT + GAP), BOARD_INSET_Y + 21.5),
         color: rgb(0xFF, 0xB5, 0x58),
         size: iced::Pixels(9.0),
-        horizontal_alignment: Horizontal::Center,
-        vertical_alignment: Vertical::Center,
+        font: CANVAS_FONT,
+        align_x: Horizontal::Center.into(),
+        align_y: Vertical::Center,
         ..Text::default()
     });
 
@@ -359,7 +362,8 @@ fn draw_board(
             position: Point::new(x, segment.y + 25.0),
             color: rgb(0xC3, 0x9F, 0xB6),
             size: iced::Pixels(8.0),
-            horizontal_alignment: Horizontal::Center,
+            font: CANVAS_FONT,
+            align_x: Horizontal::Center.into(),
             ..Text::default()
         });
     }
@@ -428,8 +432,9 @@ fn draw_board(
                 ),
                 color: text_color,
                 size: iced::Pixels(if primary_label.len() > 4 { 11.0 } else { 14.0 }),
-                horizontal_alignment: Horizontal::Center,
-                vertical_alignment: Vertical::Center,
+                font: CANVAS_FONT,
+                align_x: Horizontal::Center.into(),
+                align_y: Vertical::Center,
                 ..Text::default()
             });
         }
@@ -443,8 +448,9 @@ fn draw_board(
                 ),
                 color: Color::from_rgba8(0, 0, 0, 0.6),
                 size: iced::Pixels(10.0),
-                horizontal_alignment: Horizontal::Center,
-                vertical_alignment: Vertical::Center,
+                font: CANVAS_FONT,
+                align_x: Horizontal::Center.into(),
+                align_y: Vertical::Center,
                 ..Text::default()
             });
         }

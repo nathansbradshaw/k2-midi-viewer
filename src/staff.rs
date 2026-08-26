@@ -6,6 +6,7 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 use crate::key::KeyId;
 use crate::midi::{MidiFile, Note};
+use crate::render::CANVAS_FONT;
 use crate::synth::DRUM_CHANNEL;
 use crate::Message;
 
@@ -78,11 +79,11 @@ impl<'a> canvas::Program<Message> for StaffCanvas<'a> {
     type State = StaffState;
 
     fn update(
-        &self, state: &mut StaffState, event: canvas::Event,
+        &self, state: &mut StaffState, event: &canvas::Event,
         bounds: Rectangle, cursor: mouse::Cursor,
-    ) -> (canvas::event::Status, Option<Message>) {
+    ) -> Option<canvas::Action<Message>> {
         let Some(f) = self.midi_file else {
-            return (canvas::event::Status::Ignored, None);
+            return None;
         };
 
         match event {
@@ -92,9 +93,9 @@ impl<'a> canvas::Program<Message> for StaffCanvas<'a> {
                         state.dragging = true;
                         state.anchor_x = p.x;
                         let t = x_to_tick(p.x, bounds.width, f.ticks_per_beat, self.position_tick);
-                        return (
-                            canvas::event::Status::Captured,
-                            Some(Message::StaffSelectionChanged(Some((t, t)))),
+                        return Some(
+                            canvas::Action::publish(Message::StaffSelectionChanged(Some((t, t))))
+                                .and_capture(),
                         );
                     }
                 }
@@ -105,9 +106,9 @@ impl<'a> canvas::Program<Message> for StaffCanvas<'a> {
                         let a = x_to_tick(state.anchor_x, bounds.width, f.ticks_per_beat, self.position_tick);
                         let b = x_to_tick(p.x, bounds.width, f.ticks_per_beat, self.position_tick);
                         let range = (a.min(b), a.max(b));
-                        return (
-                            canvas::event::Status::Captured,
-                            Some(Message::StaffSelectionChanged(Some(range))),
+                        return Some(
+                            canvas::Action::publish(Message::StaffSelectionChanged(Some(range)))
+                                .and_capture(),
                         );
                     }
                 }
@@ -120,18 +121,18 @@ impl<'a> canvas::Program<Message> for StaffCanvas<'a> {
                         .map(|p| (p.x - state.anchor_x).abs() < 4.0)
                         .unwrap_or(false);
                     if clicked_without_drag {
-                        return (
-                            canvas::event::Status::Captured,
-                            Some(Message::StaffSelectionChanged(None)),
+                        return Some(
+                            canvas::Action::publish(Message::StaffSelectionChanged(None))
+                                .and_capture(),
                         );
                     }
-                    return (canvas::event::Status::Captured, None);
+                    return Some(canvas::Action::capture());
                 }
             }
             _ => {}
         }
 
-        (canvas::event::Status::Ignored, None)
+        None
     }
 
     fn draw(
@@ -167,11 +168,11 @@ fn track_note_color(track: usize, is_active: bool, is_past: bool) -> Color {
     let (r, g, b) = crate::render::TRACK_COLORS[track % crate::render::TRACK_COLORS.len()];
     let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
     if is_active {
-        Color::new(rf, gf, bf, 1.0)           // full track colour
+        Color::from_rgba(rf, gf, bf, 1.0)           // full track colour
     } else if is_past {
-        Color::new(rf * 0.27, gf * 0.27, bf * 0.27, 1.0) // very dim
+        Color::from_rgba(rf * 0.27, gf * 0.27, bf * 0.27, 1.0) // very dim
     } else {
-        Color::new(rf * 0.72, gf * 0.72, bf * 0.72, 1.0) // dimmed upcoming
+        Color::from_rgba(rf * 0.72, gf * 0.72, bf * 0.72, 1.0) // dimmed upcoming
     }
 }
 
@@ -255,32 +256,6 @@ fn draw_treble_clef(frame: &mut Frame, g_line_y: f32, color: Color) {
     frame.stroke(&hook, stroke);
 }
 
-fn draw_bass_clef(frame: &mut Frame, f_line_y: f32, color: Color) {
-    let stroke = canvas::Stroke::default()
-        .with_color(color)
-        .with_width(3.0)
-        .with_line_cap(canvas::LineCap::Round)
-        .with_line_join(canvas::LineJoin::Round);
-
-    let curve = Path::new(|b| {
-        b.move_to(Point::new(17.0, f_line_y - 1.0));
-        b.bezier_curve_to(
-            Point::new(20.0, f_line_y - 17.0),
-            Point::new(42.0, f_line_y - 17.0),
-            Point::new(43.0, f_line_y - 2.0),
-        );
-        b.bezier_curve_to(
-            Point::new(44.0, f_line_y + 13.0),
-            Point::new(31.0, f_line_y + 23.0),
-            Point::new(18.0, f_line_y + 25.0),
-        );
-    });
-    frame.stroke(&curve, stroke);
-    frame.fill(&Path::circle(Point::new(17.5, f_line_y - 1.0), 4.5), color);
-    frame.fill(&Path::circle(Point::new(49.0, f_line_y - 6.0), 2.6), color);
-    frame.fill(&Path::circle(Point::new(49.0, f_line_y + 6.0), 2.6), color);
-}
-
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
@@ -310,8 +285,9 @@ fn draw_staff(
             position: Point::new(w / 2.0, h / 2.0),
             color: Color::from_rgb8(0x76, 0x62, 0x7E),
             size: iced::Pixels(15.0),
-            horizontal_alignment: Horizontal::Center,
-            vertical_alignment: Vertical::Center,
+            font: CANVAS_FONT,
+            align_x: Horizontal::Center.into(),
+            align_y: Vertical::Center,
             ..Text::default()
         });
         return;
@@ -321,7 +297,10 @@ fn draw_staff(
     let ppb = (w - CLEF_WIDTH) / (BEHIND_BEATS + AHEAD_BEATS); // pixels per beat
     let ppt = ppb / tpb;                                         // pixels per tick
     let playhead_x = CLEF_WIDTH + BEHIND_BEATS * ppb;
-    let ref_y = h * 0.5; // middle C (slot 0) sits at vertical centre
+    // The device's playable range sits almost entirely at or above middle C, so
+    // the single staff drawn here is a treble staff — push it down to leave
+    // generous headroom above the top line for the high notes that dominate.
+    let ref_y = h * 0.78;
 
     let tick_x  = |t: u64|  -> f32 { playhead_x + (t as f64 - pos as f64) as f32 * ppt };
     let slot_y  = |s: i32|  -> f32 { ref_y - s as f32 * HALF_SPACE };
@@ -346,8 +325,10 @@ fn draw_staff(
     }
 
     // ── Staff lines ──────────────────────────────────────────────────────────
+    // Single treble staff — the device's range rarely dips into bass territory,
+    // so notes below middle C are shown with ledger lines instead of a bass staff.
     let line_col = Color::from_rgb8(0x4A, 0x35, 0x54);
-    for &s in &[2i32, 4, 6, 8, 10, -2i32, -4, -6, -8, -10] {
+    for &s in &[2i32, 4, 6, 8, 10] {
         frame.stroke(
             &Path::line(Point::new(CLEF_WIDTH - 4.0, slot_y(s)), Point::new(w, slot_y(s))),
             canvas::Stroke::default().with_color(line_col).with_width(1.0),
@@ -369,7 +350,7 @@ fn draw_staff(
             let x = tick_x(bt);
             if x >= CLEF_WIDTH {
                 frame.stroke(
-                    &Path::line(Point::new(x, slot_y(12)), Point::new(x, slot_y(-12))),
+                    &Path::line(Point::new(x, 0.0), Point::new(x, h)),
                     canvas::Stroke::default().with_color(bar_col).with_width(1.0),
                 );
             }
@@ -380,10 +361,9 @@ fn draw_staff(
         }
     }
 
-    // ── Clef symbols ────────────────────────────────────────────────────────
+    // ── Clef symbol ─────────────────────────────────────────────────────────
     let clef_col = Color::from_rgb8(0xED, 0xC8, 0x9C);
     draw_treble_clef(frame, slot_y(4), clef_col);
-    draw_bass_clef(frame, slot_y(-4), clef_col);
 
     // ── Notes ───────────────────────────────────────────────────────────────
     let vis_start = pos.saturating_sub(((BEHIND_BEATS + 1.0) * tpb) as u64);
@@ -436,9 +416,8 @@ fn draw_staff(
             );
         }
 
-        // Stem — up when below the middle line, down when above
-        let middle = if slot >= 0 { 6 } else { -6 }; // B4 (treble) or D3 (bass)
-        let stem_up = slot < middle;
+        // Stem — up when below the staff's middle line (B4, slot 6), down when above.
+        let stem_up = slot < 6;
         let sx = x + if stem_up { note_r * 0.85 } else { -note_r * 0.85 };
         let sy = y + if stem_up { -3.5 * LINE_SPACING } else { 3.5 * LINE_SPACING };
         frame.stroke(
@@ -453,8 +432,9 @@ fn draw_staff(
                 position: Point::new(x - note_r * 2.8, y),
                 color: note_col,
                 size: iced::Pixels(11.0),
-                horizontal_alignment: Horizontal::Center,
-                vertical_alignment: Vertical::Center,
+                font: CANVAS_FONT,
+                align_x: Horizontal::Center.into(),
+                align_y: Vertical::Center,
                 ..Text::default()
             });
         }
@@ -462,7 +442,7 @@ fn draw_staff(
 
     // ── Playhead ─────────────────────────────────────────────────────────────
     frame.stroke(
-        &Path::line(Point::new(playhead_x, slot_y(13)), Point::new(playhead_x, slot_y(-13))),
+        &Path::line(Point::new(playhead_x, 0.0), Point::new(playhead_x, h)),
         canvas::Stroke::default()
             .with_color(Color::from_rgba8(0xFF, 0x4F, 0x87, 0.92))
             .with_width(2.0),
@@ -491,29 +471,21 @@ fn draw_ledgers(
         );
     };
 
-    if slot >= 0 {
-        // Treble zone ──────────────────────────────────────────────────────
-        // Middle C (slot 0): one ledger below the treble bottom line (E4, slot 2).
-        if slot == 0 {
-            draw_at(frame, 0);
-        }
-        // Above treble top (F5, slot 10): ledgers at 12, 14, … up to even(slot).
-        // A note in the space just above the staff (slot 11) gets no ledger;
-        // a note on or above the first ledger line (slot ≥ 12) does.
-        if slot > 10 {
-            let top = if slot % 2 == 0 { slot } else { slot - 1 };
-            let mut s = 12i32;
-            while s <= top { draw_at(frame, s); s += 2; }
-        }
-    } else {
-        // Bass zone ───────────────────────────────────────────────────────
-        // Below bass bottom (G2, slot -10): ledgers at -12, -14, … down to even(slot).
-        // A note in the space just below the staff (slot -11) gets no ledger;
-        // a note on or below the first ledger line (slot ≤ -12) does.
-        if slot < -10 {
-            let bottom = if slot % 2 == 0 { slot } else { slot + 1 };
-            let mut s = -12i32;
-            while s >= bottom { draw_at(frame, s); s -= 2; }
-        }
+    // Above the staff top (F5, slot 10): ledgers at 12, 14, … up to even(slot).
+    // A note in the space just above the staff (slot 11) gets no ledger;
+    // a note on or above the first ledger line (slot ≥ 12) does.
+    if slot > 10 {
+        let top = if slot % 2 == 0 { slot } else { slot - 1 };
+        let mut s = 12i32;
+        while s <= top { draw_at(frame, s); s += 2; }
+    }
+
+    // Below the staff bottom (E4, slot 2): ledgers at 0 (middle C), -2, -4, …
+    // down to even(slot). A note in the space just below the staff (slot 1)
+    // gets no ledger; middle C (slot 0) and anything lower does.
+    if slot <= 0 {
+        let bottom = if slot % 2 == 0 { slot } else { slot + 1 };
+        let mut s = 0i32;
+        while s >= bottom { draw_at(frame, s); s -= 2; }
     }
 }
