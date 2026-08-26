@@ -72,7 +72,7 @@ pub struct MidiPortInfo {
     pub name: String,
 }
 
-/// Owns Chrome's MIDIAccess object and the state-change callback that keeps
+/// Owns the browser's MIDIAccess object and the state-change callback that keeps
 /// device hot-plug detection alive.
 pub struct MidiAccessHandle {
     access: MidiAccess,
@@ -190,7 +190,7 @@ impl MidiOutputConnection {
     }
 }
 
-/// Starts Chrome's permission request synchronously from the button event so
+/// Starts the browser's permission request synchronously from the button event so
 /// it retains the browser's user-activation context. The returned promise is
 /// awaited by an iced Task.
 pub fn request_midi_access() -> Result<js_sys::Promise, String> {
@@ -207,7 +207,25 @@ pub async fn resolve_midi_access(promise: js_sys::Promise) -> Result<MidiAccess,
         .await
         .map_err(js_error)?
         .dyn_into::<MidiAccess>()
-        .map_err(|_| "Chrome returned an invalid Web MIDI access object".to_string())
+        .map_err(|_| "The browser returned an invalid Web MIDI access object".to_string())
+}
+
+/// Firefox desktop exposes the standard API but deliberately uses a stricter
+/// site-permission add-on flow. Give users an actionable message instead of
+/// surfacing the browser's opaque NotAllowedError. Firefox Android has no Web
+/// MIDI implementation at all.
+pub fn midi_access_error_status(error: &str) -> String {
+    let user_agent = web_sys::window()
+        .and_then(|window| window.navigator().user_agent().ok())
+        .unwrap_or_default();
+    if user_agent.contains("Firefox/") && user_agent.contains("Android") {
+        "MIDI error: Firefox for Android does not support Web MIDI".to_string()
+    } else if user_agent.contains("Firefox/") {
+        "MIDI error: connect the device before starting Firefox, then approve its MIDI site-permission add-on"
+            .to_string()
+    } else {
+        format!("MIDI error: {error}")
+    }
 }
 
 fn js_error(value: wasm_bindgen::JsValue) -> String {

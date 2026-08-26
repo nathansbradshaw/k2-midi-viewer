@@ -344,7 +344,7 @@ struct App {
     midi_port_names: Vec<String>,
     midi_port_idx:   usize,
 
-    // Chrome Web MIDI (browser build only)
+    // Web MIDI for supporting desktop browsers (browser build only)
     #[cfg(target_arch = "wasm32")]
     web_midi_access: Option<playback::MidiAccessHandle>,
     #[cfg(target_arch = "wasm32")]
@@ -1746,7 +1746,7 @@ impl App {
             Message::RequestWebMidi => {
                 self.ensure_web_audio();
                 self.web_midi_pending = true;
-                self.web_midi_status = Some("Waiting for Chrome MIDI permission…".to_string());
+                self.web_midi_status = Some("Waiting for browser MIDI permission…".to_string());
                 match playback::request_midi_access() {
                     Ok(promise) => Task::perform(
                         async move { playback::resolve_midi_access(promise).await },
@@ -1754,7 +1754,7 @@ impl App {
                     ),
                     Err(error) => {
                         self.web_midi_pending = false;
-                        self.web_midi_status = Some(format!("MIDI error: {error}"));
+                        self.web_midi_status = Some(playback::midi_access_error_status(&error));
                         Task::none()
                     }
                 }
@@ -1770,7 +1770,7 @@ impl App {
                         self.refresh_web_midi_ports(true);
                     }
                     Err(error) => {
-                        self.web_midi_status = Some(format!("MIDI error: {error}"));
+                        self.web_midi_status = Some(playback::midi_access_error_status(&error));
                     }
                 }
                 Task::none()
@@ -2297,8 +2297,9 @@ fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'stat
         ),
         (
             "Sound / MIDI OUT",
-            "\"Sound on\" mutes the built-in synth or selected MIDI output. In Chrome, \
-             use Connect MIDI, then cycle the separate MIDI IN and MIDI OUT selectors.",
+            "\"Sound on\" mutes the built-in synth or selected MIDI output. In Chrome \
+             or desktop Firefox, use Connect MIDI, then cycle the separate MIDI IN and \
+             MIDI OUT selectors.",
         ),
         (
             "Staff view",

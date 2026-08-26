@@ -37,10 +37,14 @@ legible down to 16 pixels. Platform-ready `.ico` and `.icns` files are in
 
 ## Web MIDI
 
-Desktop Chrome also supports connected MIDI hardware. Click **Connect MIDI**,
-grant the browser permission, then use the independent **MIDI IN** and
+Desktop Chrome and Firefox support connected MIDI hardware. Click **Connect
+MIDI**, grant the browser permission, then use the independent **MIDI IN** and
 **MIDI OUT** buttons to cycle through available ports or turn either side off.
 Web MIDI requires HTTPS in production; localhost is accepted for development.
+
+Firefox uses a stricter permission flow: connect the MIDI device before starting
+Firefox, then approve the site-specific MIDI permission add-on when prompted.
+Firefox for Android does not support Web MIDI.
 
 ## GitHub Pages
 
