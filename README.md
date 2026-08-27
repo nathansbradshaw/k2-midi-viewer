@@ -42,6 +42,19 @@ MIDI**, grant the browser permission, then use the independent **MIDI IN** and
 **MIDI OUT** buttons to cycle through available ports or turn either side off.
 Web MIDI requires HTTPS in production; localhost is accepted for development.
 
+Set **IN OCT** to the same value as **Settings → Octave** on the physical
+Keyboard Keyboard. The viewer defaults to `2`, matching the hardware firmware,
+and uses this only to locate the originating virtual key; MIDI audio keeps the
+pitch sent by the hardware. The selection is saved in the page URL, so another
+octave setting can be kept for future sessions or shared setups.
+
+For a live hardware demonstration, select both a **MIDI IN** and **MIDI OUT**,
+then enable **THRU**. Every MIDI message received from the input is forwarded
+unchanged to the output while the virtual board continues to show incoming
+notes. Turning THRU off or changing the input sends All Notes Off to prevent
+held notes from becoming stuck. THRU is off by default and its setting is also
+saved in the page URL.
+
 Firefox uses a stricter permission flow: connect the MIDI device before starting
 Firefox, then approve the site-specific MIDI permission add-on when prompted.
 Firefox for Android does not support Web MIDI.

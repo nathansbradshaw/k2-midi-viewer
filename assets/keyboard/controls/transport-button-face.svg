@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 112" role="img" aria-labelledby="title desc">
+  <title id="title">Warm beige transport button face</title>
+  <desc id="desc">An empty raised molded-plastic keycap for a separate transport glyph.</desc>
+  <rect x="10" y="13" width="160" height="89" rx="13" fill="#090a08" fill-opacity=".58"/>
+  <rect x="10" y="10" width="160" height="89" rx="13" fill="#8f856d"/>
+  <rect x="11" y="8" width="158" height="86" rx="12" fill="#d5c9aa"/>
+  <rect x="15" y="12" width="150" height="78" rx="9" fill="#cbbfa1"/>
+  <rect x="17" y="14" width="146" height="72" rx="8" fill="#d8ccad"/>
+  <rect x="16" y="13" width="148" height="75" rx="8.5" fill="none" stroke="#f6edcf" stroke-opacity=".42" stroke-width="2"/>
+  <path d="M22 17H158" stroke="#fff9df" stroke-opacity=".55" stroke-width="2" stroke-linecap="round"/>
+  <path d="M20 86Q90 92 160 86" fill="none" stroke="#5f5849" stroke-opacity=".5" stroke-width="3" stroke-linecap="round"/>
+</svg>

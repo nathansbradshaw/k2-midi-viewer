@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title desc">
+  <title id="title">Thirteen-mark rotary control scale</title>
+  <desc id="desc">Warm instrument-panel ticks spanning 270 degrees with an open lower sector.</desc>
+  <path d="M19.72 77.70 18.30 76.28 24.67 69.92 26.08 71.33Z" fill="#d0c6a8"/>
+  <path d="M13.18 63.23 12.61 61.85 18.15 59.55 18.72 60.94Z" fill="#bdb495"/>
+  <path d="M7 49 7 47 16 47 16 49Z" fill="#d0c6a8"/>
+  <path d="M12.61 34.15 13.18 32.77 18.72 35.06 18.15 36.45Z" fill="#bdb495"/>
+  <path d="M20.60 21.66 21.66 20.60 25.90 24.84 24.84 25.90Z" fill="#bdb495"/>
+  <path d="M32.77 13.18 34.15 12.61 36.45 18.15 35.06 18.72Z" fill="#bdb495"/>
+  <path d="M47 6 49 6 49 16 47 16Z" fill="#d0c6a8"/>
+  <path d="M61.85 12.61 63.23 13.18 60.94 18.72 59.55 18.15Z" fill="#bdb495"/>
+  <path d="M74.34 20.60 75.40 21.66 71.16 25.90 70.10 24.84Z" fill="#bdb495"/>
+  <path d="M82.82 32.77 83.39 34.15 77.85 36.45 77.28 35.06Z" fill="#bdb495"/>
+  <path d="M89 47 89 49 80 49 80 47Z" fill="#d0c6a8"/>
+  <path d="M83.39 61.85 82.82 63.23 77.28 60.94 77.85 59.55Z" fill="#bdb495"/>
+  <path d="M77.70 76.28 76.28 77.70 69.92 71.33 71.33 69.92Z" fill="#d0c6a8"/>
+</svg>

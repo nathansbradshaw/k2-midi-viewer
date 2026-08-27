@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 280" preserveAspectRatio="none" role="img" aria-labelledby="title desc">
+  <title id="title">Dark molded display bezel</title>
+  <desc id="desc">A wide raised plastic frame with a completely transparent recessed opening.</desc>
+  <path fill="#000" fill-opacity=".58" fill-rule="evenodd" d="M52 22H908Q947 22 947 61V246Q947 271 922 271H38Q13 271 13 246V61Q13 22 52 22ZM92 63Q76 63 76 79V223H884V79Q884 63 868 63Z"/>
+  <path fill="#242723" fill-rule="evenodd" d="M52 17H908Q942 17 942 51V229Q942 263 908 263H52Q18 263 18 229V51Q18 17 52 17ZM92 58Q74 58 74 76V204Q74 222 92 222H868Q886 222 886 204V76Q886 58 868 58Z"/>
+  <rect x="24" y="23" width="912" height="234" rx="29" fill="none" stroke="#858981" stroke-opacity=".3" stroke-width="3" vector-effect="non-scaling-stroke"/>
+  <path d="M48 36H912" stroke="#a7aaa2" stroke-opacity=".22" stroke-width="3" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  <path d="M48 248H912" stroke="#000" stroke-opacity=".72" stroke-width="5" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  <rect x="68" y="52" width="824" height="176" rx="23" fill="none" stroke="#020302" stroke-opacity=".9" stroke-width="12" vector-effect="non-scaling-stroke"/>
+  <rect x="76" y="60" width="808" height="160" rx="16" fill="none" stroke="#60635c" stroke-opacity=".25" stroke-width="2" vector-effect="non-scaling-stroke"/>
+</svg>

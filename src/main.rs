@@ -23,6 +23,8 @@ use iced::widget::{
     Stack, button, column, container, image as image_widget, pick_list, row, scrollable, slider,
     text, tooltip,
 };
+#[cfg(target_arch = "wasm32")]
+use iced::widget::Space;
 use iced::{
     Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Point, Radians,
     Rectangle, Renderer, Shadow, Size, Subscription, Task, Theme, Vector, mouse,
@@ -450,6 +452,29 @@ impl std::fmt::Display for ChannelOption {
 fn channel_options(prefix: &'static str) -> Vec<ChannelOption> {
     (1..=16u8)
         .map(|channel| ChannelOption { prefix, channel })
+        .collect()
+}
+
+/// The octave selected in the physical Keyboard Keyboard's Settings menu.
+/// The firmware defines its untransposed Wicki-Hayden map at octave 4, then
+/// shifts outgoing melodic MIDI by `(octave - 4) * 12`. Mirroring that setting
+/// here lets incoming notes be associated with the physical switch that sent
+/// them, even when the shifted pitch also exists on another keyboard row.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct MidiInputOctaveOption(i8);
+
+#[cfg(target_arch = "wasm32")]
+impl std::fmt::Display for MidiInputOctaveOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IN OCT {}", self.0)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn midi_input_octave_options() -> Vec<MidiInputOctaveOption> {
+    (MIN_MIDI_INPUT_OCTAVE..=MAX_MIDI_INPUT_OCTAVE)
+        .map(MidiInputOctaveOption)
         .collect()
 }
 
@@ -1267,6 +1292,27 @@ impl KeyPickMode {
     }
 }
 
+/// Keep these aligned with `keyboard-keyboard/code/src/settings.rs`. Octave 4
+/// is the firmware's untransposed SWITCH_TO_NOTE table; shipped hardware
+/// defaults to octave 2.
+#[cfg(target_arch = "wasm32")]
+const MIN_MIDI_INPUT_OCTAVE: i8 = 2;
+#[cfg(target_arch = "wasm32")]
+const MAX_MIDI_INPUT_OCTAVE: i8 = 5;
+#[cfg(any(test, target_arch = "wasm32"))]
+const DEFAULT_MIDI_INPUT_OCTAVE: i8 = 2;
+#[cfg(any(test, target_arch = "wasm32"))]
+const MIDI_INPUT_REFERENCE_OCTAVE: i8 = 4;
+
+/// Reverses the physical keyboard's octave transpose for visualization only.
+/// The original incoming note is still used for audio and note-off messages.
+#[cfg(any(test, target_arch = "wasm32"))]
+fn midi_input_board_note(note: u8, input_octave: i8) -> (u8, bool) {
+    let shift = (MIDI_INPUT_REFERENCE_OCTAVE - input_octave) as i16 * 12;
+    let mapped = note as i16 + shift;
+    (mapped.clamp(0, 127) as u8, !(0..=127).contains(&mapped))
+}
+
 struct App {
     window_size: Size,
     photo_assets: PhotoBoardAssets,
@@ -1378,6 +1424,14 @@ struct App {
     web_midi_pending: bool,
     #[cfg(target_arch = "wasm32")]
     web_midi_status: Option<String>,
+    /// Mirrors the octave value in the physical Keyboard Keyboard's Settings
+    /// menu so octave-transposed MIDI can still light the originating switch.
+    #[cfg(target_arch = "wasm32")]
+    web_midi_input_octave: i8,
+    /// When enabled, every raw message from the selected Web MIDI input is
+    /// forwarded byte-for-byte to the selected output before visualization.
+    #[cfg(target_arch = "wasm32")]
+    web_midi_thru_enabled: bool,
 
     // staff selection
     staff_selection: Option<(u64, u64)>,
@@ -1490,6 +1544,10 @@ impl Default for App {
             web_midi_pending: false,
             #[cfg(target_arch = "wasm32")]
             web_midi_status: None,
+            #[cfg(target_arch = "wasm32")]
+            web_midi_input_octave: DEFAULT_MIDI_INPUT_OCTAVE,
+            #[cfg(target_arch = "wasm32")]
+            web_midi_thru_enabled: false,
 
             staff_selection: None,
             selection_highlight_cache: HashMap::new(),
@@ -1556,6 +1614,10 @@ pub enum Message {
     NextWebMidiInput,
     #[cfg(target_arch = "wasm32")]
     NextWebMidiOutput,
+    #[cfg(target_arch = "wasm32")]
+    WebMidiInputOctave(i8),
+    #[cfg(target_arch = "wasm32")]
+    ToggleWebMidiThru,
     // staff selection
     StaffSelectionChanged(Option<(u64, u64)>),
 }
@@ -2052,6 +2114,13 @@ impl App {
 
     #[cfg(target_arch = "wasm32")]
     fn select_web_midi_input(&mut self, id: Option<String>) {
+        // A disconnected input cannot deliver releases for notes it already
+        // sent through, so explicitly silence the destination before swapping.
+        if self.web_midi_thru_enabled {
+            if let Some(ref output) = self.web_midi_output {
+                output.all_notes_off();
+            }
+        }
         self.release_web_midi_input_notes(None);
         self.web_midi_input = None;
         self.web_midi_input_id = id.clone();
@@ -2102,6 +2171,25 @@ impl App {
         }
     }
 
+    /// Sends the untouched browser MIDI payload to the selected output. This
+    /// happens independently of `parse_midi_input`, which intentionally only
+    /// understands the subset needed to animate keys and drive the soft synth.
+    #[cfg(target_arch = "wasm32")]
+    fn forward_web_midi_thru(&mut self, data: &[u8]) {
+        if !self.web_midi_thru_enabled {
+            return;
+        }
+        let error = self
+            .web_midi_output
+            .as_ref()
+            .and_then(|output| output.send(data).err());
+        if let Some(error) = error {
+            self.web_midi_thru_enabled = false;
+            self.web_midi_status = Some(format!("MIDI error: thru failed — {error}"));
+            self.sync_url();
+        }
+    }
+
     #[cfg(target_arch = "wasm32")]
     fn web_midi_key_for_note(&self, note: u8, channel: u8) -> Option<(KeyId, bool)> {
         if channel == synth::DRUM_CHANNEL {
@@ -2111,15 +2199,16 @@ impl App {
                 .copied()
                 .map(|key| (key, false));
         }
-        if let Some(keys) = self.note_to_all_keys.get(&note) {
+        let (board_note, clipped) = midi_input_board_note(note, self.web_midi_input_octave);
+        if let Some(keys) = self.note_to_all_keys.get(&board_note) {
             let key = if self.key_pick_mode == KeyPickMode::Closest {
                 pick_key_nearest(keys, &self.key_pos, &self.web_midi_highlighted)
             } else {
                 pick_key_fixed(keys, self.key_pick_mode)
             }?;
-            return Some((key, false));
+            return Some((key, clipped));
         }
-        let nearest = self.nearest_keyboard_note(note)?;
+        let nearest = self.nearest_keyboard_note(board_note)?;
         let keys = self.note_to_all_keys.get(&nearest)?;
         let key = if self.key_pick_mode == KeyPickMode::Closest {
             pick_key_nearest(keys, &self.key_pos, &self.web_midi_highlighted)
@@ -3056,6 +3145,7 @@ impl App {
                         .map(|mut queue| queue.drain(..).collect())
                         .unwrap_or_default();
                     for data in midi_messages {
+                        self.forward_web_midi_thru(&data);
                         if let Some(action) = parse_midi_input(&data) {
                             self.handle_web_midi_input(action);
                         }
@@ -3146,6 +3236,33 @@ impl App {
                 let id =
                     next_web_midi_port(self.web_midi_output_id.as_deref(), &self.web_midi_outputs);
                 self.select_web_midi_output(id);
+                Task::none()
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            Message::WebMidiInputOctave(octave) => {
+                // Clear held highlights before changing their mapping; their
+                // raw MIDI notes remain the synth's source of truth.
+                self.release_web_midi_input_notes(None);
+                self.web_midi_input_octave =
+                    octave.clamp(MIN_MIDI_INPUT_OCTAVE, MAX_MIDI_INPUT_OCTAVE);
+                self.sync_url();
+                Task::none()
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            Message::ToggleWebMidiThru => {
+                if self.web_midi_thru_enabled {
+                    // A held note's eventual Note Off will no longer be
+                    // forwarded after disabling THRU, so clear it now.
+                    if let Some(ref output) = self.web_midi_output {
+                        output.all_notes_off();
+                    }
+                    self.web_midi_thru_enabled = false;
+                } else if self.web_midi_input.is_some() && self.web_midi_output.is_some() {
+                    self.web_midi_thru_enabled = true;
+                }
+                self.sync_url();
                 Task::none()
             }
 
@@ -3497,16 +3614,50 @@ impl App {
                     (!self.web_midi_outputs.is_empty() || self.web_midi_output_id.is_some())
                         .then_some(Message::NextWebMidiOutput),
                 );
+            let input_octave = pick_list(
+                midi_input_octave_options(),
+                Some(MidiInputOctaveOption(self.web_midi_input_octave)),
+                |option| Message::WebMidiInputOctave(option.0),
+            )
+            .text_size(9)
+            .padding([3, 6])
+            .style(channel_pick_list_style);
+            let thru_available = self.web_midi_input.is_some() && self.web_midi_output.is_some();
+            let thru = button(
+                text(if self.web_midi_thru_enabled {
+                    "THRU: ON"
+                } else {
+                    "THRU"
+                })
+                .size(9),
+            )
+            .padding([3, 6])
+            .style(if self.web_midi_thru_enabled {
+                toggled_style
+            } else {
+                secondary_control_style
+            })
+            .on_press_maybe(
+                (self.web_midi_thru_enabled || thru_available)
+                    .then_some(Message::ToggleWebMidiThru),
+            );
             let status = self.web_midi_status.as_deref().unwrap_or("");
             column![
                 row![input, output].spacing(5),
-                text(status)
-                    .size(9)
-                    .color(if status.starts_with("MIDI error:") {
-                        Color::from_rgb(0.98, 0.48, 0.38)
-                    } else {
-                        TEXT_MUTED
-                    }),
+                row![
+                    text(status)
+                        .size(9)
+                        .color(if status.starts_with("MIDI error:") {
+                            Color::from_rgb(0.98, 0.48, 0.38)
+                        } else {
+                            TEXT_MUTED
+                        }),
+                    Space::new().width(Length::Fill),
+                    thru,
+                    input_octave,
+                ]
+                .spacing(5)
+                .align_y(Alignment::Center),
             ]
             .spacing(2)
             .into()
@@ -4345,6 +4496,16 @@ mod url_state {
         if let Some(octaves) = pairs.get("live_octave").and_then(|v| v.parse::<i8>().ok()) {
             app.live_octave = octaves.saturating_mul(12);
         }
+        if let Some(octave) = pairs
+            .get("midi_in_octave")
+            .and_then(|value| value.parse::<i8>().ok())
+        {
+            app.web_midi_input_octave =
+                octave.clamp(super::MIN_MIDI_INPUT_OCTAVE, super::MAX_MIDI_INPUT_OCTAVE);
+        }
+        if let Some(&value) = pairs.get("midi_thru") {
+            app.web_midi_thru_enabled = value != "0";
+        }
         if let Some(&v) = pairs.get("waveforms") {
             app.waveform_keys = v
                 .split(',')
@@ -4414,6 +4575,12 @@ mod url_state {
         }
         if app.live_octave != 0 {
             params.push(format!("live_octave={}", app.live_octave / 12));
+        }
+        if app.web_midi_input_octave != super::DEFAULT_MIDI_INPUT_OCTAVE {
+            params.push(format!("midi_in_octave={}", app.web_midi_input_octave));
+        }
+        if app.web_midi_thru_enabled {
+            params.push("midi_thru=1".to_string());
         }
         let waveforms = app.active_waveforms();
         if !waveforms.is_empty() {
@@ -4573,6 +4740,48 @@ mod tests {
                 channel: 2
             }),
         );
+    }
+
+    #[test]
+    fn default_keyboard_octave_maps_physical_corner_notes_to_their_keys() {
+        let layout = build_layout();
+        let key_at = |row: f32, rightmost: bool| {
+            layout
+                .keys
+                .iter()
+                .filter(|key| {
+                    key.row == row
+                        && matches!(key.cluster, Cluster::Alpha | Cluster::AlphaLight)
+                })
+                .min_by(|a, b| {
+                    let ordering = a.col.total_cmp(&b.col);
+                    if rightmost { ordering.reverse() } else { ordering }
+                })
+                .expect("alpha row must contain keys")
+        };
+
+        // Firmware octave 2 sends the raw top-right 104 as MIDI 80, and the
+        // raw bottom-right 80 as MIDI 56. Undoing that hardware transpose is
+        // what makes two isolated G# presses land on different physical keys.
+        let (top_note, top_clipped) = midi_input_board_note(80, DEFAULT_MIDI_INPUT_OCTAVE);
+        let (bottom_note, bottom_clipped) =
+            midi_input_board_note(56, DEFAULT_MIDI_INPUT_OCTAVE);
+        let top_right = key_at(1.0, true);
+        let bottom_right = key_at(5.0, true);
+
+        assert_eq!(top_note, 104);
+        assert_eq!(bottom_note, 80);
+        assert!(!top_clipped && !bottom_clipped);
+        assert_eq!(layout.note_to_all_keys.get(&top_note), Some(&vec![top_right.id]));
+        assert_eq!(
+            layout.note_to_all_keys.get(&bottom_note).and_then(|keys| keys.last()),
+            Some(&bottom_right.id),
+        );
+    }
+
+    #[test]
+    fn midi_input_octave_four_is_an_untransposed_visual_map() {
+        assert_eq!(midi_input_board_note(104, MIDI_INPUT_REFERENCE_OCTAVE), (104, false));
     }
 
     #[test]
