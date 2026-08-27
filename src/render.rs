@@ -3,9 +3,10 @@ use std::collections::{HashMap, HashSet};
 
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::canvas::{self, Frame, Geometry, Path, Text};
-use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse};
+use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse, touch};
 
 use crate::key::{Cluster, Key, KeyId};
+use crate::key_geometry::{self, SourceRect, TextGuide};
 use crate::Message;
 
 include!(concat!(env!("OUT_DIR"), "/k2_key_sprites.rs"));
@@ -16,7 +17,6 @@ include!(concat!(env!("OUT_DIR"), "/k2_key_sprites.rs"));
 pub struct PhotoBoardAssets {
     pub shell: iced::widget::image::Handle,
     pub leds: iced::widget::image::Handle,
-    pub power_switch: iced::widget::image::Handle,
     pub display: iced::widget::image::Handle,
     key_sprites: RefCell<HashMap<(KeyId, u8), iced::widget::image::Handle>>,
 }
@@ -27,7 +27,6 @@ impl PhotoBoardAssets {
         Self {
             shell: handle(&include_bytes!("../assets/keyboard/keyboard-clean-mask.png")[..]),
             leds: handle(&include_bytes!("../assets/keyboard/led-panel-board-crop.png")[..]),
-            power_switch: handle(&include_bytes!("../assets/keyboard/power-switch.png")[..]),
             display: handle(&include_bytes!("../assets/keyboard/display.png")[..]),
             key_sprites: RefCell::new(HashMap::new()),
         }
@@ -78,6 +77,9 @@ const BASE_BOARD_HEIGHT: f32 = 520.0;
 
 pub struct BoardCanvas<'a> {
     pub photo_assets: &'a PhotoBoardAssets,
+    /// Keep the board at its width-derived scale and let the canvas clip the
+    /// excess top/bottom instead of shrinking the whole instrument.
+    pub compact_crop: bool,
     pub keys:        &'a [Key],
     /// Maps KeyId → track index for color. usize::MAX = manually toggled (uses original colour).
     pub highlighted: &'a HashMap<KeyId, usize>,
@@ -102,9 +104,201 @@ pub struct BoardCanvas<'a> {
     pub knob_values: &'a [f32],
 }
 
+/// The narrow grab rail attached to the bottom edge of the photographic board.
+/// It owns the pointer drag state so resizing never enters the keyboard's much
+/// busier note/knob event path.
+pub struct BoardResizeHandle {
+    pub current_height: f32,
+    pub min_height: f32,
+    pub max_height: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResizePointer {
+    Mouse,
+    Touch(touch::Finger),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResizeDrag {
+    pointer: ResizePointer,
+    start_y: f32,
+    start_height: f32,
+}
+
+#[derive(Default)]
+pub struct BoardResizeState {
+    drag: Option<ResizeDrag>,
+}
+
+fn resized_keyboard_height(start: f32, delta_y: f32, min: f32, max: f32) -> f32 {
+    (start + delta_y).clamp(min.min(max), max.max(min))
+}
+
+impl canvas::Program<Message> for BoardResizeHandle {
+    type State = BoardResizeState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &canvas::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        match event {
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let position = cursor.position()?;
+                if bounds.contains(position) {
+                    state.drag = Some(ResizeDrag {
+                        pointer: ResizePointer::Mouse,
+                        start_y: position.y,
+                        start_height: self.current_height,
+                    });
+                    return Some(canvas::Action::capture());
+                }
+            }
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if let Some(ResizeDrag {
+                    pointer: ResizePointer::Mouse,
+                    start_y,
+                    start_height,
+                }) = state.drag
+                {
+                    if let Some(position) = cursor.position() {
+                        let height = resized_keyboard_height(
+                            start_height,
+                            position.y - start_y,
+                            self.min_height,
+                            self.max_height,
+                        );
+                        return Some(
+                            canvas::Action::publish(Message::KeyboardHeightChanged(height))
+                                .and_capture(),
+                        );
+                    }
+                }
+            }
+            canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if matches!(
+                    state.drag.map(|drag| drag.pointer),
+                    Some(ResizePointer::Mouse)
+                ) {
+                    state.drag = None;
+                    return Some(canvas::Action::capture());
+                }
+            }
+            canvas::Event::Touch(touch::Event::FingerPressed { id, position }) => {
+                if state.drag.is_none() && bounds.contains(*position) {
+                    state.drag = Some(ResizeDrag {
+                        pointer: ResizePointer::Touch(*id),
+                        start_y: position.y,
+                        start_height: self.current_height,
+                    });
+                    return Some(canvas::Action::capture());
+                }
+            }
+            canvas::Event::Touch(touch::Event::FingerMoved { id, position }) => {
+                if let Some(ResizeDrag {
+                    pointer: ResizePointer::Touch(active_id),
+                    start_y,
+                    start_height,
+                }) = state.drag
+                {
+                    if *id == active_id {
+                        let height = resized_keyboard_height(
+                            start_height,
+                            position.y - start_y,
+                            self.min_height,
+                            self.max_height,
+                        );
+                        return Some(
+                            canvas::Action::publish(Message::KeyboardHeightChanged(height))
+                                .and_capture(),
+                        );
+                    }
+                }
+            }
+            canvas::Event::Touch(touch::Event::FingerLifted { id, .. })
+            | canvas::Event::Touch(touch::Event::FingerLost { id, .. }) => {
+                if matches!(
+                    state.drag.map(|drag| drag.pointer),
+                    Some(ResizePointer::Touch(active_id)) if active_id == *id
+                ) {
+                    state.drag = None;
+                    return Some(canvas::Action::capture());
+                }
+            }
+            _ => {}
+        }
+
+        None
+    }
+
+    fn draw(
+        &self,
+        state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let width = frame.width();
+        let height = frame.height();
+        let active = state.drag.is_some();
+
+        frame.fill(
+            &Path::rectangle(Point::ORIGIN, frame.size()),
+            rgb(0x0B, 0x0E, 0x0C),
+        );
+        frame.fill(
+            &Path::rectangle(Point::new(0.0, 0.0), Size::new(width, 1.0)),
+            rgb(0x38, 0x3A, 0x30),
+        );
+
+        let grip_width = (width * 0.16).clamp(72.0, 220.0);
+        let grip_x = (width - grip_width) / 2.0;
+        let grip_color = if active {
+            rgb(0xD4, 0x68, 0x54)
+        } else {
+            rgb(0x7A, 0x78, 0x65)
+        };
+        for offset in [-2.5, 2.5] {
+            frame.fill(
+                &rounded_rect(
+                    Rectangle {
+                        x: grip_x,
+                        y: height / 2.0 + offset - 1.0,
+                        width: grip_width,
+                        height: 2.0,
+                    },
+                    1.0,
+                ),
+                grip_color,
+            );
+        }
+
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if state.drag.is_some() || cursor.is_over(bounds) {
+            mouse::Interaction::ResizingVertically
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct CanvasState {
     photo_cache: canvas::Cache,
+    photo_crop_cache: canvas::Cache,
     overlay_cache: canvas::Cache,
     /// The knob drag popup gets its own geometry layer, separate from the
     /// crowded overlay frame — some large fills/thick strokes silently fail
@@ -149,7 +343,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 if let Some(pos) = cursor.position_in(bounds) {
                     for key in self.keys {
-                        if key_rect_with_size(key, bounds.size()).contains(pos) {
+                        if key_rect_with_size(key, bounds.size(), self.compact_crop).contains(pos) {
                             if let Some(idx) = key.knob_index {
                                 state.dragging_knob = Some(idx);
                                 let current = self.knob_values.get(idx as usize).copied().unwrap_or(0.0);
@@ -179,7 +373,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                     if let Some(pos) = cursor.position() {
                         if let Some(knob_rect) = self.keys.iter()
                             .find(|key| key.knob_index == Some(idx))
-                            .map(|key| key_rect_with_size(key, bounds.size()))
+                            .map(|key| key_rect_with_size(key, bounds.size(), self.compact_crop))
                         {
                             let (top, bottom) = knob_slider_track(knob_rect);
                             let (start_y, start_value) = state.drag_start.unwrap_or((pos.y, 0.0));
@@ -210,7 +404,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 if let Some(pos) = cursor.position_in(bounds) {
                     for key in self.keys {
-                        if key_rect_with_size(key, bounds.size()).contains(pos) {
+                        if key_rect_with_size(key, bounds.size(), self.compact_crop).contains(pos) {
                             if let Some(idx) = key.knob_index {
                                 let amount = match *delta {
                                     mouse::ScrollDelta::Lines { y, .. } => y * 0.05,
@@ -245,27 +439,37 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
         let active_knob = state.dragging_knob.map(|idx| {
             (idx, self.knob_values.get(idx as usize).copied().unwrap_or(0.0))
         });
-        let photo_geometry = state.photo_cache.draw(renderer, bounds.size(), |frame| {
-            draw_board_base(frame, self.photo_assets);
+        let photo_cache = if self.compact_crop {
+            &state.photo_crop_cache
+        } else {
+            &state.photo_cache
+        };
+        let photo_geometry = photo_cache.draw(renderer, bounds.size(), |frame| {
+            frame.with_clip(canvas_clip(bounds.size()), |frame| {
+                draw_board_base(frame, self.photo_assets, self.compact_crop);
+            });
         });
         let mut badges: Vec<(Rectangle, Vec<usize>)> = Vec::new();
         let overlay_geometry = state.overlay_cache.draw(renderer, bounds.size(), |frame| {
-            draw_board_overlay(
-                frame,
-                self.photo_assets,
-                self.keys,
-                self.highlighted,
-                self.overlay_highlighted,
-                self.play_order,
-                self.selected_controls,
-                self.pressed,
-                self.projected_labels,
-                self.drum_note_to_key,
-                self.show_drum_symbols,
-                self.knob_values,
-                active_knob,
-                &mut badges,
-            );
+            frame.with_clip(canvas_clip(bounds.size()), |frame| {
+                draw_board_overlay(
+                    frame,
+                    self.photo_assets,
+                    self.compact_crop,
+                    self.keys,
+                    self.highlighted,
+                    self.overlay_highlighted,
+                    self.play_order,
+                    self.selected_controls,
+                    self.pressed,
+                    self.projected_labels,
+                    self.drum_note_to_key,
+                    self.show_drum_symbols,
+                    self.knob_values,
+                    active_knob,
+                    &mut badges,
+                );
+            });
         });
         // Keep interaction imagery separate from the cached photographic base
         // so active, colour-swapped key sprites render above the resting rows.
@@ -279,7 +483,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
             let slider_geometry = state.slider_cache.draw(renderer, bounds.size(), |frame| {
                 if let Some(knob_rect) = self.keys.iter()
                     .find(|key| key.knob_index == Some(idx))
-                    .map(|key| key_rect_with_size(key, bounds.size()))
+                    .map(|key| key_rect_with_size(key, bounds.size(), self.compact_crop))
                 {
                     draw_knob_slider(frame, knob_rect, value, knob_readout(idx, value));
                 }
@@ -313,7 +517,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
         }
         if let Some(pos) = cursor.position_in(bounds) {
             for key in self.keys {
-                if key_rect_with_size(key, bounds.size()).contains(pos) {
+                if key_rect_with_size(key, bounds.size(), self.compact_crop).contains(pos) {
                     if key.is_knob {
                         return mouse::Interaction::ResizingVertically;
                     }
@@ -327,17 +531,20 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
 
 #[cfg(test)]
 pub fn key_rect(key: &Key) -> Rectangle {
-    key_rect_with_size(key, Size::new(1484.0, BASE_BOARD_HEIGHT))
+    key_rect_with_size(key, Size::new(1484.0, BASE_BOARD_HEIGHT), false)
 }
 
-fn key_rect_with_size(key: &Key, size: Size) -> Rectangle {
+fn key_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Rectangle {
     let canonical = match key.cluster {
         Cluster::Alpha | Cluster::AlphaLight => {
-            let pitch = ALPHA_W / 15.0;
+            let row = key.row as usize;
+            let source = key_geometry::alpha_key_source_rect(row, key.col, key.w);
+            let (source_width, _) = key_geometry::ALPHA_SOURCE_SIZES[row - 1];
+            let source_scale = ALPHA_W / source_width;
             Rectangle {
-                x: ALPHA_X + key.col * pitch,
+                x: ALPHA_X + source.x * source_scale,
                 y: ALPHA_Y + (key.row - 1.0) * ALPHA_ROW_PITCH,
-                width: key.w * pitch,
+                width: source.width * source_scale,
                 height: ALPHA_ROW_PITCH,
             }
         }
@@ -362,7 +569,15 @@ fn key_rect_with_size(key: &Key, size: Size) -> Rectangle {
         Cluster::Encoder => {
             let index = key.knob_index.unwrap_or(12);
             if index == 12 {
-                Rectangle { x: 102.0, y: 187.0, width: 100.0, height: 90.0 }
+                let opening: Rectangle =
+                    Rectangle { x: 102.0, y: 187.0, width: 100.0, height: 90.0 };
+                let diameter = opening.width.min(opening.height) * 0.68;
+                Rectangle {
+                    x: opening.x + (opening.width - diameter) / 2.0,
+                    y: opening.y + (opening.height - diameter) / 2.0,
+                    width: diameter,
+                    height: diameter,
+                }
             } else {
                 let group = (index / 4) as usize;
                 let within = (index % 4) as f32;
@@ -383,17 +598,23 @@ fn key_rect_with_size(key: &Key, size: Size) -> Rectangle {
             }
         }
     };
-    photo_rect(size, canonical.x, canonical.y, canonical.width, canonical.height)
+    photo_rect(
+        size,
+        compact_crop,
+        canonical.x,
+        canonical.y,
+        canonical.width,
+        canonical.height,
+    )
 }
 
-fn key_sprite_rect_with_size(key: &Key, size: Size) -> Rectangle {
-    let rect = key_rect_with_size(key, size);
+fn key_sprite_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Rectangle {
+    let rect = key_rect_with_size(key, size, compact_crop);
     let source_aspect = match key.cluster {
         Cluster::Alpha | Cluster::AlphaLight => {
             let row = (key.row as usize).saturating_sub(1).min(4);
-            let widths = [2129.0, 2119.0, 2114.0, 2128.0, 2131.0];
-            let heights = [184.0, 180.0, 184.0, 184.0, 177.0];
-            (widths[row] / 15.0 * key.w) / heights[row]
+            let crop = key_geometry::alpha_key_source_rect(row + 1, key.col, key.w);
+            crop.width / crop.height
         }
         Cluster::Nav => (467.0 / 3.0 * key.w) / (308.0 / 2.0 * key.h),
         Cluster::Arrow => (456.0 / 3.0 * key.w) / (322.0 / 2.0 * key.h),
@@ -401,6 +622,68 @@ fn key_sprite_rect_with_size(key: &Key, size: Size) -> Rectangle {
         Cluster::Encoder => return rect,
     };
     Rectangle { height: rect.width / source_aspect, ..rect }
+}
+
+fn alpha_source_rect_with_size(
+    row: usize,
+    source: SourceRect,
+    size: Size,
+    compact_crop: bool,
+) -> Rectangle {
+    let (source_width, _) = key_geometry::ALPHA_SOURCE_SIZES[row - 1];
+    let row_y = ALPHA_Y + (row as f32 - 1.0) * ALPHA_ROW_PITCH;
+    let row_origin = photo_rect(size, compact_crop, ALPHA_X, row_y, 0.0, 0.0);
+    let scale = photo_rect(size, compact_crop, ALPHA_X, row_y, ALPHA_W, 0.0).width
+        / source_width;
+    Rectangle {
+        x: row_origin.x + source.x * scale,
+        y: row_origin.y + source.y * scale,
+        width: source.width * scale,
+        height: source.height * scale,
+    }
+}
+
+fn alpha_text_guide_with_size(
+    key: &Key,
+    size: Size,
+    compact_crop: bool,
+) -> Option<(Point, Option<Rectangle>)> {
+    let row = key.row as usize;
+    match key_geometry::alpha_text_guide(row, key.col)? {
+        TextGuide::Center { x, y } => {
+            let point = alpha_source_rect_with_size(
+                row,
+                SourceRect { x, y, width: 0.0, height: 0.0 },
+                size,
+                compact_crop,
+            );
+            Some((Point::new(point.x, point.y), None))
+        }
+        TextGuide::Bounds(bounds) => {
+            let bounds = alpha_source_rect_with_size(row, bounds, size, compact_crop);
+            Some((
+                Point::new(bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0),
+                Some(bounds),
+            ))
+        }
+    }
+}
+
+fn fill_text_with_bounds(frame: &mut Frame, mut text: Text, bounds: Option<Rectangle>) {
+    if let Some(bounds) = bounds {
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return;
+        }
+        // Iced's WebGL canvas drops cached text placed in a nested clip draft.
+        // Constrain the paragraph and conservatively fit a single-line label
+        // instead: even a full-em-wide glyph cannot cross the marked box.
+        let glyph_count = text.content.chars().count().max(1) as f32;
+        let width_limit = bounds.width * 0.86 / glyph_count;
+        let height_limit = bounds.height * 0.45;
+        text.size = iced::Pixels(text.size.0.min(width_limit).min(height_limit).max(3.0));
+        text.max_width = bounds.width;
+    }
+    frame.fill_text(text);
 }
 
 /// Returns (filter_color, text_color) for a key.
@@ -448,6 +731,11 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
 
 const PHOTO_WIDTH: f32 = 1949.0;
 const PHOTO_HEIGHT: f32 = 807.0;
+const COMPACT_CROP_X: f32 = 82.0;
+const COMPACT_CROP_Y: f32 = 178.0;
+const COMPACT_CROP_WIDTH: f32 = 1778.0;
+const COMPACT_CROP_HEIGHT: f32 = 579.0;
+pub const COMPACT_BOARD_ASPECT: f32 = COMPACT_CROP_WIDTH / COMPACT_CROP_HEIGHT;
 const ALPHA_X: f32 = 124.0;
 const ALPHA_Y: f32 = 346.0;
 const ALPHA_W: f32 = 1129.0;
@@ -466,28 +754,58 @@ const NUMPAD_Y: f32 = 347.0;
 const NUMPAD_W: f32 = 296.0;
 const NUMPAD_H: f32 = 382.0;
 
-fn board_rect(size: Size) -> Rectangle {
+fn canvas_clip(size: Size) -> Rectangle {
+    Rectangle::new(Point::ORIGIN, size)
+}
+
+fn board_rect(size: Size, compact_crop: bool) -> Rectangle {
     let available = Rectangle {
         x: 2.0,
         y: 2.0,
         width: (size.width - 4.0).max(1.0),
         height: (size.height - 4.0).max(1.0),
     };
-    let scale = (available.width / PHOTO_WIDTH)
-        .min(available.height / PHOTO_HEIGHT)
-        .max(0.0001);
+    let scale = if compact_crop {
+        available.width / COMPACT_CROP_WIDTH
+    } else {
+        (available.width / PHOTO_WIDTH).min(available.height / PHOTO_HEIGHT)
+    }
+    .max(0.0001);
     let width = PHOTO_WIDTH * scale;
     let height = PHOTO_HEIGHT * scale;
+    let (x, y) = if compact_crop {
+        // Align the canonical working-surface crop to the viewport. If a user
+        // drags the viewport shorter than the preset, retain the crop's center
+        // while clipping equally from its top and bottom.
+        let x = available.x - COMPACT_CROP_X * scale;
+        let crop_center_y = COMPACT_CROP_Y + COMPACT_CROP_HEIGHT / 2.0;
+        let desired_y = available.y + available.height / 2.0 - crop_center_y * scale;
+        let min_y = available.y + available.height - height;
+        let y = desired_y.clamp(min_y.min(available.y), min_y.max(available.y));
+        (x, y)
+    } else {
+        (
+            available.x + (available.width - width) / 2.0,
+            available.y + (available.height - height) / 2.0,
+        )
+    };
     Rectangle {
-        x: available.x + (available.width - width) / 2.0,
-        y: available.y + (available.height - height) / 2.0,
+        x,
+        y,
         width,
         height,
     }
 }
 
-fn photo_rect(size: Size, x: f32, y: f32, width: f32, height: f32) -> Rectangle {
-    let board = board_rect(size);
+fn photo_rect(
+    size: Size,
+    compact_crop: bool,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> Rectangle {
+    let board = board_rect(size, compact_crop);
     Rectangle {
         x: board.x + x / PHOTO_WIDTH * board.width,
         y: board.y + y / PHOTO_HEIGHT * board.height,
@@ -504,12 +822,12 @@ struct TapeLabel {
     size: f32,
 }
 
-fn draw_tape_labels(frame: &mut Frame, size: Size) {
-    let board = board_rect(size);
+fn draw_tape_labels(frame: &mut Frame, size: Size, compact_crop: bool) {
+    let board = board_rect(size, compact_crop);
     let scale = board.width / PHOTO_WIDTH;
     let ink = Color::from_rgba8(0x20, 0x2A, 0x2D, 0.88);
     let labels = [
-        TapeLabel { text: "ON/OFF", x: 151.0, y: 132.0, size: 20.0 },
+        TapeLabel { text: "BITCRUSH", x: 151.0, y: 132.0, size: 15.0 },
         TapeLabel { text: "VOL", x: 300.0, y: 132.0, size: 15.0 },
         TapeLabel { text: "CUTOFF", x: 381.0, y: 132.0, size: 13.0 },
         TapeLabel { text: "ATTACK", x: 462.0, y: 132.0, size: 13.0 },
@@ -579,9 +897,13 @@ fn contained_rect(target: Rectangle, source_width: f32, source_height: f32) -> R
     }
 }
 
-fn draw_board_base(frame: &mut Frame, photo_assets: &PhotoBoardAssets) {
+fn draw_board_base(
+    frame: &mut Frame,
+    photo_assets: &PhotoBoardAssets,
+    compact_crop: bool,
+) {
     let size = frame.size();
-    let board = board_rect(size);
+    let board = board_rect(size, compact_crop);
 
     frame.fill(&Path::rectangle(Point::ORIGIN, size), rgb(0x09, 0x0D, 0x0E));
     let shadow = rounded_rect(
@@ -602,7 +924,7 @@ fn draw_board_base(frame: &mut Frame, photo_assets: &PhotoBoardAssets) {
         (ARROW_X, ARROW_Y, ARROW_W, ARROW_H),
         (NUMPAD_X, NUMPAD_Y, NUMPAD_W, NUMPAD_H),
     ] {
-        let rect = photo_rect(size, x, y, width, height);
+        let rect = photo_rect(size, compact_crop, x, y, width, height);
         frame.fill(
             &Path::rectangle(Point::new(rect.x, rect.y), rect.size()),
             rgb(0x07, 0x09, 0x08),
@@ -611,15 +933,19 @@ fn draw_board_base(frame: &mut Frame, photo_assets: &PhotoBoardAssets) {
 
     frame.draw_image(board, &photo_assets.shell);
     frame.draw_image(
-        contained_rect(photo_rect(size, 102.0, 187.0, 100.0, 90.0), 192.0, 184.0),
-        &photo_assets.power_switch,
-    );
-    frame.draw_image(
-        contained_rect(photo_rect(size, 1282.0, 187.0, 233.0, 90.0), 447.0, 178.0),
+        contained_rect(
+            photo_rect(size, compact_crop, 1282.0, 187.0, 233.0, 90.0),
+            447.0,
+            178.0,
+        ),
         &photo_assets.display,
     );
     frame.draw_image(
-        contained_rect(photo_rect(size, 1543.0, 189.0, 305.0, 89.0), 577.0, 175.0),
+        contained_rect(
+            photo_rect(size, compact_crop, 1543.0, 189.0, 305.0, 89.0),
+            577.0,
+            175.0,
+        ),
         &photo_assets.leds,
     );
 }
@@ -627,6 +953,7 @@ fn draw_board_base(frame: &mut Frame, photo_assets: &PhotoBoardAssets) {
 fn draw_board_overlay(
     frame: &mut Frame,
     photo_assets: &PhotoBoardAssets,
+    compact_crop: bool,
     keys: &[Key],
     highlighted: &HashMap<KeyId, usize>,
     overlay_highlighted: Option<&HashMap<KeyId, usize>>,
@@ -641,7 +968,7 @@ fn draw_board_overlay(
     badges: &mut Vec<(Rectangle, Vec<usize>)>,
 ) {
     let size = frame.size();
-    let display_bezel_rect = photo_rect(size, 1282.0, 187.0, 233.0, 90.0);
+    let display_bezel_rect = photo_rect(size, compact_crop, 1282.0, 187.0, 233.0, 90.0);
     let display_text = active_knob
         .and_then(|(idx, value)| knob_readout(idx, value))
         .unwrap_or_else(|| "MIDI READY".to_string());
@@ -652,17 +979,19 @@ fn draw_board_overlay(
             display_bezel_rect.y + display_bezel_rect.height / 2.0,
         ),
         color: rgb(0xFF, 0xB5, 0x58),
-        size: iced::Pixels((board_rect(size).width / PHOTO_WIDTH * 14.0).clamp(7.0, 14.0)),
+        size: iced::Pixels(
+            (board_rect(size, compact_crop).width / PHOTO_WIDTH * 14.0).clamp(7.0, 14.0),
+        ),
         font: CANVAS_FONT,
         align_x: Horizontal::Center.into(),
         align_y: Vertical::Center,
         ..Text::default()
     });
 
-    draw_tape_labels(frame, size);
+    draw_tape_labels(frame, size, compact_crop);
 
     for key in keys {
-        let rect = key_rect_with_size(key, size);
+        let rect = key_rect_with_size(key, size, compact_crop);
         let lit_track = overlay_highlighted.and_then(|overlay| overlay.get(&key.id)).copied()
             .or_else(|| highlighted.get(&key.id).copied())
             .or_else(|| {
@@ -686,7 +1015,7 @@ fn draw_board_overlay(
         let press_offset = lit_track
             .map(|_| (rect.height * 0.055).clamp(1.0, 4.0))
             .unwrap_or(0.0);
-        let mut sprite_rect = key_sprite_rect_with_size(key, size);
+        let mut sprite_rect = key_sprite_rect_with_size(key, size, compact_crop);
         sprite_rect.y += press_offset;
         if let Some(sprite) = photo_assets.key_sprite(key, lit_track) {
             frame.draw_image(sprite_rect, &sprite);
@@ -733,37 +1062,70 @@ fn draw_board_overlay(
             Cluster::Encoder => unreachable!(),
         };
 
+        let board_scale = board_rect(size, compact_crop).width / PHOTO_WIDTH;
+        let (label_anchor, label_bounds) =
+            if matches!(key.cluster, Cluster::Alpha | Cluster::AlphaLight) {
+                if let Some((mut anchor, mut bounds)) =
+                    alpha_text_guide_with_size(key, size, compact_crop)
+                {
+                    anchor.y += press_offset;
+                    if let Some(region) = bounds.as_mut() {
+                        region.y += press_offset;
+                    }
+                    (anchor, bounds)
+                } else {
+                    (
+                        Point::new(
+                            visual_rect.x + visual_rect.width / 2.0,
+                            visual_rect.y + visual_rect.height / 2.0,
+                        ),
+                        None,
+                    )
+                }
+            } else {
+                (
+                    Point::new(
+                        visual_rect.x + visual_rect.width / 2.0,
+                        visual_rect.y + visual_rect.height / 2.0,
+                    ),
+                    None,
+                )
+            };
+
         if !primary_label.is_empty() {
-            frame.fill_text(Text {
+            fill_text_with_bounds(frame, Text {
                 content: primary_label.to_string(),
                 position: Point::new(
-                    visual_rect.x + visual_rect.width / 2.0,
-                    visual_rect.y + visual_rect.height / 2.0
-                        - if secondary_label.is_some() { 6.0 } else { 0.0 },
+                    label_anchor.x,
+                    label_anchor.y
+                        - if secondary_label.is_some() { 6.0 * board_scale } else { 0.0 },
                 ),
                 color: text_color,
-                size: iced::Pixels(if primary_label.len() > 4 { 11.0 } else { 14.0 }),
+                size: iced::Pixels(
+                    ((if primary_label.len() > 4 { 11.0 } else { 14.0 }) * board_scale)
+                        .clamp(5.0, 14.0),
+                ),
                 font: CANVAS_FONT,
                 align_x: Horizontal::Center.into(),
                 align_y: Vertical::Center,
                 ..Text::default()
-            });
+            }, label_bounds);
         }
 
         if let Some(sub) = secondary_label {
-            frame.fill_text(Text {
+            fill_text_with_bounds(frame, Text {
                 content: sub.to_string(),
                 position: Point::new(
-                    visual_rect.x + visual_rect.width / 2.0,
-                    visual_rect.y + visual_rect.height / 2.0 + 12.0,
+                    label_anchor.x,
+                    label_anchor.y + 12.0 * board_scale,
                 ),
                 color: Color::from_rgba8(0, 0, 0, 0.6),
-                size: iced::Pixels(10.0),
+                size: iced::Pixels((10.0 * board_scale).clamp(4.0, 10.0)),
                 font: CANVAS_FONT,
                 align_x: Horizontal::Center.into(),
                 align_y: Vertical::Center,
                 ..Text::default()
-            });
+            }, label_bounds);
         }
 
         if let Some(steps) = play_order.and_then(|order| order.get(&key.id)) {
@@ -1190,19 +1552,154 @@ mod tests {
     }
 
     #[test]
+    fn annotated_middle_keys_recolor_their_left_bevel() {
+        for key_id in [32, 46] {
+            let resting = image::load_from_memory(
+                preprocessed_key_sprite(key_id, 0).expect("resting sprite must exist"),
+            )
+            .expect("resting WebP must decode")
+            .into_rgba8();
+            let highlighted = image::load_from_memory(
+                preprocessed_key_sprite(key_id, 9).expect("highlighted sprite must exist"),
+            )
+            .expect("highlighted WebP must decode")
+            .into_rgba8();
+
+            let left_bevel_width = (resting.width() / 5).max(1);
+            let mut changed_material = 0_u32;
+            let mut material_pixels = 0_u32;
+            for y in 0..resting.height() {
+                for x in 0..left_bevel_width {
+                    let before = resting.get_pixel(x, y);
+                    let brightness = (before[0] as f32 * 0.2126
+                        + before[1] as f32 * 0.7152
+                        + before[2] as f32 * 0.0722)
+                        / 255.0;
+                    if before[3] < 200 || brightness < 0.35 {
+                        continue;
+                    }
+                    material_pixels += 1;
+                    let after = highlighted.get_pixel(x, y);
+                    let delta = (before[0] as i16 - after[0] as i16).unsigned_abs()
+                        + (before[1] as i16 - after[1] as i16).unsigned_abs()
+                        + (before[2] as i16 - after[2] as i16).unsigned_abs();
+                    if delta > 30 {
+                        changed_material += 1;
+                    }
+                }
+            }
+
+            assert!(material_pixels > 20, "key {key_id} needs sampled bevel material");
+            assert!(
+                changed_material * 4 > material_pixels * 3,
+                "key {key_id} left an unrecolored strip on its annotated bevel"
+            );
+        }
+    }
+
+    #[test]
     fn photo_key_geometry_scales_with_the_board() {
         let key = Key::new(1, "", 0.0, 1.0, Cluster::Alpha).size(1.5, 1.0);
         let large_size = Size::new(1484.0, 520.0);
         let small_size = Size::new(744.0, 260.0);
-        let large = key_rect_with_size(&key, large_size);
-        let small = key_rect_with_size(&key, small_size);
+        let large = key_rect_with_size(&key, large_size, false);
+        let small = key_rect_with_size(&key, small_size, false);
 
-        let large_board = board_rect(large_size);
-        let small_board = board_rect(small_size);
+        let large_board = board_rect(large_size, false);
+        let small_board = board_rect(small_size, false);
         let large_x = (large.x - large_board.x) / large_board.width;
         let small_x = (small.x - small_board.x) / small_board.width;
         assert!((large_x - small_x).abs() < 0.0001);
         assert!((large.width / large_board.width - small.width / small_board.width).abs() < 0.0001);
+    }
+
+    #[test]
+    fn cropped_viewport_keeps_board_scale_and_removes_vertical_overflow() {
+        let full_size = Size::new(1200.0, 600.0);
+        let compact_size = Size::new(1200.0, 360.0);
+        let full = board_rect(full_size, true);
+        let compact = board_rect(compact_size, true);
+
+        assert!((full.width - compact.width).abs() < 0.0001);
+        assert!((full.height - compact.height).abs() < 0.0001);
+        assert!(compact.y < 0.0);
+
+        let available_width = 1196.0;
+        let exact_crop_size = Size::new(
+            1200.0,
+            4.0 + available_width / COMPACT_CROP_WIDTH * COMPACT_CROP_HEIGHT,
+        );
+        let crop = photo_rect(
+            exact_crop_size,
+            true,
+            COMPACT_CROP_X,
+            COMPACT_CROP_Y,
+            COMPACT_CROP_WIDTH,
+            COMPACT_CROP_HEIGHT,
+        );
+        assert!((crop.x - 2.0).abs() < 0.0001);
+        assert!((crop.y - 2.0).abs() < 0.0001);
+        assert!((crop.width - available_width).abs() < 0.0001);
+        assert!((crop.height - (exact_crop_size.height - 4.0)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn keyboard_resize_drag_is_clamped_in_both_directions() {
+        assert_eq!(resized_keyboard_height(300.0, 40.0, 120.0, 500.0), 340.0);
+        assert_eq!(resized_keyboard_height(300.0, -900.0, 120.0, 500.0), 120.0);
+        assert_eq!(resized_keyboard_height(300.0, 900.0, 120.0, 500.0), 500.0);
+    }
+
+    #[test]
+    fn keyboard_resize_handle_tracks_a_mouse_drag_outside_its_bounds() {
+        let handle = BoardResizeHandle {
+            current_height: 300.0,
+            min_height: 120.0,
+            max_height: 500.0,
+        };
+        let bounds = Rectangle {
+            x: 10.0,
+            y: 200.0,
+            width: 800.0,
+            height: 16.0,
+        };
+        let mut state = BoardResizeState::default();
+
+        let pressed = <BoardResizeHandle as canvas::Program<Message>>::update(
+            &handle,
+            &mut state,
+            &canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            bounds,
+            mouse::Cursor::Available(Point::new(400.0, 208.0)),
+        );
+        assert!(pressed.is_some());
+        assert!(state.drag.is_some());
+
+        let moved = <BoardResizeHandle as canvas::Program<Message>>::update(
+            &handle,
+            &mut state,
+            &canvas::Event::Mouse(mouse::Event::CursorMoved {
+                position: Point::new(400.0, 288.0),
+            }),
+            bounds,
+            mouse::Cursor::Available(Point::new(400.0, 288.0)),
+        )
+        .expect("an active drag should publish the new keyboard height");
+        let (message, _, _) = moved.into_inner();
+        assert!(matches!(
+            message,
+            Some(Message::KeyboardHeightChanged(height)) if height == 380.0
+        ));
+
+        let released = <BoardResizeHandle as canvas::Program<Message>>::update(
+            &handle,
+            &mut state,
+            &canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            bounds,
+            mouse::Cursor::Unavailable,
+        );
+        assert!(released.is_some());
+        assert!(state.drag.is_none());
     }
 
     #[test]

@@ -91,9 +91,9 @@ pub fn build_layout() -> Layout {
     let mut keys: Vec<Key> = Vec::new();
 
     // --- Encoders ---
-    // The physical board has one power-style control followed by exactly 12
-    // knobs in three banks. Keep Volume..Glide in those twelve photographed
-    // knob positions; the extra Bitcrush effect occupies the standalone slot.
+    // The instrument uses the standalone left control bay for Bitcrush,
+    // followed by exactly 12 knobs in three banks. Keep Volume..Glide in those
+    // twelve photographed knob positions.
     let grouped_knob_count = crate::synth::KNOB_COUNT - 1;
     let bitcrush_index = grouped_knob_count as u8; // KNOB_PARAMS[12]
     for i in 0..grouped_knob_count {

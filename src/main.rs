@@ -1,5 +1,6 @@
 mod drums;
 mod key;
+mod key_geometry;
 mod layout;
 mod midi;
 #[cfg(not(target_arch = "wasm32"))]
@@ -27,7 +28,7 @@ use iced::{
 use key::{Cluster, Key, KeyId};
 use layout::build_layout;
 use playback::{PlayCmd, PlayEvent, PlaybackHandle};
-use render::{BoardCanvas, PhotoBoardAssets};
+use render::{BoardCanvas, BoardResizeHandle, PhotoBoardAssets};
 use staff::StaffCanvas;
 
 const SEEK_STEP: f32 = 0.0001;
@@ -441,6 +442,9 @@ struct App {
     keyboard_hits_enabled: bool,
     drum_symbols_enabled: bool,
     compact_keyboard: bool,
+    /// User-selected board viewport height. `None` keeps the responsive
+    /// automatic/compact sizing presets in control.
+    keyboard_height_override: Option<f32>,
     manual_open: bool,
     computer_keys_down: HashMap<ComputerKey, Vec<KeyId>>,
     computer_key_labels: HashMap<KeyId, String>,
@@ -569,6 +573,7 @@ impl Default for App {
             keyboard_hits_enabled: false,
             drum_symbols_enabled: false,
             compact_keyboard: false,
+            keyboard_height_override: None,
             manual_open: false,
             computer_keys_down: HashMap::new(),
             computer_key_labels,
@@ -657,6 +662,7 @@ pub enum Message {
     ToggleKeyboardHits,
     ToggleDrumSymbols,
     ToggleCompactKeyboard,
+    KeyboardHeightChanged(f32),
     ToggleManual,
     ComputerKeyPressed(ComputerKey),
     ComputerKeyReleased(ComputerKey),
@@ -1825,7 +1831,13 @@ impl App {
 
             Message::ToggleCompactKeyboard => {
                 self.compact_keyboard = !self.compact_keyboard;
+                self.keyboard_height_override = None;
                 self.sync_url();
+                Task::none()
+            }
+
+            Message::KeyboardHeightChanged(height) => {
+                self.keyboard_height_override = Some(height);
                 Task::none()
             }
 
@@ -2566,7 +2578,9 @@ impl App {
 
         let identity = column![
             text("K2").size(24).color(TEXT_MAIN),
-            text("LEXMARK INSTRUMENT / MIDI VIEWER").size(10).color(TEXT_MUTED),
+            text("KEYBOARD KEYBOARD / MIDI VIEWER")
+                .size(10)
+                .color(TEXT_MUTED),
         ]
         .spacing(0)
         .width(Length::Fill);
@@ -2880,8 +2894,65 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         let overlay_highlighted = None;
 
+        // Keep one uniform photographic scale for the shell, keys and controls.
+        // Compact/manual heights shorten the viewport around that board instead
+        // of scaling the instrument down to fit the shorter rectangle.
+        const BOARD_ASPECT: f32 = 1949.0 / 807.0;
+        let width_limited = ((self.window_size.width - outer_pad * 2.0) / BOARD_ASPECT).max(1.0);
+        let chrome_reserve = if track_row.is_some() { 225.0 } else { 175.0 }
+            + if self.window_size.width < 1180.0 {
+                42.0
+            } else {
+                0.0
+            };
+        let staff_reserve = if has_file {
+            if self.compact_keyboard || self.window_size.width < 1180.0 {
+                155.0
+            } else {
+                215.0
+            }
+        } else if self.compact_keyboard {
+            90.0
+        } else {
+            145.0
+        };
+        let height_limited =
+            (self.window_size.height - chrome_reserve - staff_reserve - outer_pad * 2.0).max(120.0);
+        // Compact mode is the photographed working-surface crop: the power
+        // switch/control bank through every key row, without the outer header
+        // and footer. Its own aspect ratio determines the viewport height.
+        let mode_height = if self.compact_keyboard {
+            (self.window_size.width - outer_pad * 2.0) / render::COMPACT_BOARD_ASPECT
+        } else {
+            width_limited.min(620.0)
+        };
+        let automatic_keyboard_height = height_limited.min(mode_height);
+
+        // Manual resizing may reclaim more room than the automatic layout, but
+        // always leaves a usable strip for the staff/manual and never grows
+        // beyond the photograph's width-limited natural height.
+        let resize_min = width_limited
+            .min(if self.window_size.height < 650.0 {
+                105.0
+            } else {
+                135.0
+            })
+            .max(80.0);
+        let staff_floor = if has_file { 82.0 } else { 46.0 };
+        let resize_max = width_limited
+            .min(620.0)
+            .min(
+                (self.window_size.height - chrome_reserve - staff_floor - outer_pad * 2.0 - 16.0)
+                    .max(resize_min),
+            )
+            .max(resize_min);
+        let keyboard_height = self
+            .keyboard_height_override
+            .unwrap_or(automatic_keyboard_height)
+            .clamp(resize_min, resize_max);
         let keyboard = Canvas::new(BoardCanvas {
             photo_assets: &self.photo_assets,
+            compact_crop: self.compact_keyboard,
             keys: &self.keys,
             highlighted: highlighted_ref,
             overlay_highlighted,
@@ -2899,29 +2970,16 @@ impl App {
             knob_values: &self.knob_values,
         })
         .width(Length::Fill)
-        .height({
-            // The canvas may have more room than the photograph, but the renderer
-            // always uses a single contain transform. This keeps the 1949×807 shell
-            // from stretching while compact mode returns useful room to the staff.
-            const BOARD_ASPECT: f32 = 1949.0 / 807.0;
-            let width_limited = (self.window_size.width - outer_pad * 2.0) / BOARD_ASPECT;
-            let chrome_reserve = if track_row.is_some() { 225.0 } else { 175.0 }
-                + if self.window_size.width < 1180.0 { 42.0 } else { 0.0 };
-            let staff_reserve = if has_file {
-                if self.compact_keyboard || self.window_size.width < 1180.0 { 155.0 } else { 215.0 }
-            } else if self.compact_keyboard {
-                90.0
-            } else {
-                145.0
-            };
-            let height_limited = (self.window_size.height
-                - chrome_reserve
-                - staff_reserve
-                - outer_pad * 2.0)
-                .max(210.0);
-            let mode_cap = if self.compact_keyboard { 355.0 } else { 620.0 };
-            width_limited.min(height_limited).min(mode_cap).max(190.0)
-        });
+        .height(keyboard_height);
+
+        let keyboard_resize = Canvas::new(BoardResizeHandle {
+            current_height: keyboard_height,
+            min_height: resize_min,
+            max_height: resize_max,
+        })
+        .width(Length::Fill)
+        .height(16.0);
+        let keyboard_region = column![keyboard, keyboard_resize].spacing(0);
 
         // ── Staff canvas (or, with nothing loaded, usage instructions) ──────
         let staff: Element<Message> = if has_file {
@@ -2959,7 +3017,7 @@ impl App {
         if let Some(track_row) = track_row {
             content_children.push(track_row);
         }
-        content_children.push(keyboard.into());
+        content_children.push(keyboard_region.into());
         content_children.push(staff);
         content_children.push(selection_row);
 

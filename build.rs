@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 
 use image::{Rgba, RgbaImage};
 
+#[allow(dead_code)]
+#[path = "src/key_geometry.rs"]
+mod key_geometry;
+
 const TRACK_COLORS: [[u8; 3]; 8] = [
     [0x4F, 0xC3, 0xF7],
     [0xFF, 0xB7, 0x4D],
@@ -54,6 +58,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", asset_dir.join(name).display());
     }
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/key_geometry.rs");
 
     let sources: Vec<RgbaImage> = source_names
         .iter()
@@ -203,6 +208,15 @@ fn sprite_specs() -> Vec<SpriteSpec> {
 }
 
 fn source_crop(spec: SpriteSpec, source: &RgbaImage) -> (u32, u32, u32, u32) {
+    if matches!(spec.group, KeyGroup::Alpha) {
+        let rect = key_geometry::alpha_key_source_rect(spec.source + 1, spec.column, spec.width);
+        return (
+            rect.x.round() as u32,
+            rect.y.round() as u32,
+            rect.width.round() as u32,
+            rect.height.round() as u32,
+        );
+    }
     let x0 = (spec.column / spec.columns * source.width() as f32).round() as u32;
     let y0 = (spec.row / spec.rows * source.height() as f32).round() as u32;
     let x1 = ((spec.column + spec.width) / spec.columns * source.width() as f32).round() as u32;
@@ -319,7 +333,17 @@ fn variant_color(spec: SpriteSpec, variant: usize) -> Option<[u8; 3]> {
 
 fn recolor_key(image: &mut RgbaImage, color: [u8; 3], spec: SpriteSpec) {
     let pixel_height = image.height().max(1) as f32;
-    let untouched_bevel = if matches!(spec.group, KeyGroup::Alpha) && spec.column > 0.0 {
+    // The older equal-grid crops could contain a projecting sliver from the
+    // previous key, so their left edge stays in its resting colour. Annotated
+    // rows end exactly at the marked separator and contain the target key's
+    // own bevel; preserving that edge causes the obvious cyan strip seen on
+    // highlighted middle keys.
+    let annotated_alpha = matches!(spec.group, KeyGroup::Alpha)
+        && key_geometry::has_annotated_boundaries(spec.source + 1);
+    let untouched_bevel = if matches!(spec.group, KeyGroup::Alpha)
+        && !annotated_alpha
+        && spec.column > 0.0
+    {
         ((image.width() as f32 / spec.width) * 0.20).round() as u32
     } else {
         0

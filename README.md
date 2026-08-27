@@ -46,21 +46,25 @@ Firefox uses a stricter permission flow: connect the MIDI device before starting
 Firefox, then approve the site-specific MIDI permission add-on when prompted.
 Firefox for Android does not support Web MIDI.
 
-## Planned key-image annotations
+## Key-image annotations
 
-As future asset work, create annotated copies of the key images so their geometry
-can be extracted precisely. Keep the originals unchanged and preserve the exact
+Annotated copies let the renderer extract precise key and label geometry. The
+second- and third-row trials support both tested text-guide styles; the remaining
+rows are future asset work. Keep the originals unchanged and preserve the exact
 image dimensions. On each annotated copy:
 
 - Draw every key boundary in solid red, including unambiguous borders where keys
   touch.
-- Mark the preferred center for key-label text with a small purple dot or cross.
+- Prefer a yellow text-boundary box on every key. Its center places the label,
+  and rendered text is fitted so it never extends outside the box.
+- A small purple dot or cross is also supported when only a text center is
+  needed.
 - Use opaque, non-antialiased marks when possible so the colors are easy to detect
   programmatically.
 - Name the copy after the original with an `_annotated` suffix.
 
-These annotations can later be converted into key-boundary polygons and text
-coordinates.
+The red guides drive sprite extraction and hit geometry; the purple or yellow
+guides drive label placement.
 
 ## GitHub Pages
 

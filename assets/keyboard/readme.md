@@ -18,8 +18,8 @@ There must be one visible key layer: the real key sprites.
 ## Next design pass: clean photographic instrument
 
 The next implementation must treat `keyboard-clean-mask.png` as the primary
-enclosure. It preserves the real blue-grey case, masking tape, Lexmark badge,
-wear, and imperfect edges while removing the handwritten legends. The
+enclosure. It preserves the real blue-grey case, masking tape, wear, and
+imperfect edges while removing the handwritten legends and manufacturer badge. The
 application will supply those legends itself. The result should look like a
 real custom instrument whose labels and active keys happen to be live, not a
 photograph sitting inside a conventional dashboard.
@@ -43,7 +43,7 @@ This pass has five linked goals:
 - Centralize label copy, anchor, maximum width, alignment, font size, line
   spacing, and small rotation in one tape-label manifest. Do not scatter magic
   coordinates throughout the renderer.
-- Include all physical labels: power, the twelve knob functions, Bitcrush,
+- Include all physical labels: Bitcrush, the other twelve knob functions,
   MIDI send/receive/status, waveform symbols, velocity-switch note, keyboard
   name, arrow functions, and drums.
 - Bundle one hand-lettered font or purpose-built glyph atlas. Browser/system
@@ -105,8 +105,9 @@ targets. Do not fit a sprite independently into an approximate cell. Calibrate
 the old 3618 × 1560 asset locations against landmarks in the clean enclosure
 and store the resulting canonical rectangles/anchors in one geometry table.
 
-Transparent space around the irregular enclosure is allowed. Use `contain`,
-never `cover`; no part of the keyboard may be cropped to fill its panel.
+Normal mode uses `contain` and shows the complete enclosure. Compact mode is
+the explicit exception: it uses the fixed working-surface crop documented
+below. Neither mode may distort the board or use an arbitrary `cover` crop.
 
 ### Surrounding interface system
 
@@ -135,8 +136,11 @@ when the normal board would leave the staff unusable.
 
 - Full mode: maximize the aspect-correct board while reserving transport,
   tracks, and a useful staff region.
-- Compact mode: use the same complete board and uniform scale at a smaller
-  size; do not crop the bottom edge or squash the keyboard vertically.
+- Compact mode: show canonical crop `(82, 178)–(1860, 757)`. This is the working
+  surface from the power switch/control bank through all five key rows, the
+  navigation/arrows, and numpad. It deliberately removes the manufacturer/header
+  strip, lower footer, and narrow side margins instead of making the complete
+  instrument into a smaller thumbnail.
 - With a MIDI file loaded, reserve a practical minimum staff height before
   allocating remaining height to the board.
 - Without a file, keep the service manual collapsed by default on short
@@ -203,9 +207,16 @@ Tape ink is rendered from the centralized manifest in `src/render.rs` using the
 bundled Permanent Marker font. Board hardware, labels, key sprites, knobs, hit
 targets, and status display all share the same uniform contain transform. The
 outer UI uses the instrument-derived charcoal/olive/salmon palette, and the old
-tan manual is now a collapsed dark service drawer. Compact mode scales the full
-board instead of cropping it, while height budgeting reserves the lower region
-for the staff on short displays.
+tan manual is now a collapsed dark service drawer. Compact mode uses the fixed
+working-surface crop while height budgeting reserves the lower region for the
+staff on short displays.
+
+A drag rail is attached directly below the keyboard viewport. Dragging it with
+a mouse or touch input chooses a custom viewport height and gives the released
+space to the staff/manual below. Compact stays in its working-surface crop while
+it is resized; normal mode keeps its complete-board behavior. Its responsive
+bounds retain a small usable lower pane. Using the Compact board control again
+clears the custom height and returns sizing to the compact/automatic preset.
 
 Validated layouts: 1568 × 994, 1366 × 768, and 1024 × 600. A held-key visual
 check confirms the alternate sprite has no coloured rectangle or neighbouring
@@ -232,7 +243,8 @@ key contamination. Native unit tests and the release WebAssembly build pass.
 - `led panel.png`: supplied Num/Caps/Scroll cutout. This file is retained as a
   source but is nearly fully transparent, so it is not used at runtime.
 - `led-panel-board-crop.png`: lossless replacement cropped from `keyboard.png`.
-- `power-switch.png`: lossless power-switch crop from `keyboard.png`.
+- `power-switch.png`: retained only as a historical calibration reference; the
+  standalone left bay now contains the virtual Bitcrush knob.
 - `display.png`: lossless display crop from `keyboard.png`.
 
 The alpha row order is always:
