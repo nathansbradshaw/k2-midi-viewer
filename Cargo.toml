@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced       = { version = "0.14", default-features = false, features = ["canvas", "crisp", "fira-sans", "image-without-codecs", "tokio"] }
+iced       = { version = "0.14", default-features = false, features = ["advanced", "canvas", "crisp", "fira-sans", "image-without-codecs", "svg", "tokio"] }
 image      = { version = "0.25", default-features = false, features = ["png", "webp"] }
 midly      = "0.5"
 rfd        = "0.17"

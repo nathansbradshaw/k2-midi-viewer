@@ -16,15 +16,16 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path};
+use iced::advanced::svg;
+use iced::widget::canvas::{self, Canvas, Frame, Geometry, Image as CanvasImage, Path};
 use iced::widget::image::{self, FilterMethod};
 use iced::widget::{
     Stack, button, column, container, image as image_widget, pick_list, row, scrollable, slider,
     text, tooltip,
 };
 use iced::{
-    Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Point, Rectangle,
-    Renderer, Shadow, Size, Subscription, Task, Theme, Vector, mouse,
+    Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Point, Radians,
+    Rectangle, Renderer, Shadow, Size, Subscription, Task, Theme, Vector, mouse,
 };
 
 use key::{Cluster, Key, KeyId};
@@ -55,6 +56,77 @@ impl ChromeAssets {
     }
 }
 
+/// The shared physical-control asset family (see
+/// `assets/keyboard/controls/README.md`): one rotary knob face, one fader
+/// cap, one neutral LED lens, a matched rocker-switch pair, and the label
+/// plate / LCD glass overlays. Decoded once and cloned per view, mirroring
+/// `ChromeAssets`.
+struct ControlAssets {
+    rotary_knob_face: image::Handle,
+    fader_cap: image::Handle,
+    led_jewel: image::Handle,
+    // Pre-rasterized from the shared rocker-switch-{off,on}.svg pair (kept
+    // alongside, unmodified) rather than drawn live at icon scale: their
+    // fine plastic-grain noise filter aliases into rainbow static at
+    // ~15-30px in every renderer tested, resvg included — it needs the
+    // supersampled-then-downsampled raster a real asset pipeline would bake,
+    // the same treatment already given the other photographic PNG assets.
+    rocker_off: image::Handle,
+    rocker_on: image::Handle,
+    label_plate: svg::Handle,
+    lcd_glass: svg::Handle,
+}
+
+/// The photographic knob-face/fader-cap/led-jewel PNGs ship at a uniform
+/// 1024px master resolution, but each is drawn into a control only ~15-25px
+/// across. Handing the GPU that ~50-85x minification directly produced
+/// visible mip/sampling artifacts (a flat solid-color square in place of the
+/// LED's lens, most visibly) — the same class of problem the rocker-switch
+/// SVGs had at icon scale. Downscaling once, here, with a proper Lanczos
+/// filter bakes in the antialiasing a real asset pipeline would ship as a
+/// pre-sized icon, leaving only a mild final GPU resize.
+fn decode_and_downscale(bytes: &[u8], max_w: u32, max_h: u32) -> image::Handle {
+    let decoded = ::image::load_from_memory(bytes)
+        .expect("embedded control asset must decode")
+        .resize(max_w, max_h, ::image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    image::Handle::from_rgba(decoded.width(), decoded.height(), decoded.into_raw())
+}
+
+impl ControlAssets {
+    fn new() -> Self {
+        Self {
+            rotary_knob_face: decode_and_downscale(
+                include_bytes!("../assets/keyboard/controls/rotary-knob-face.png"),
+                96,
+                96,
+            ),
+            fader_cap: decode_and_downscale(
+                include_bytes!("../assets/keyboard/controls/fader-cap.png"),
+                96,
+                54,
+            ),
+            led_jewel: decode_and_downscale(
+                include_bytes!("../assets/keyboard/controls/led-jewel.png"),
+                64,
+                64,
+            ),
+            rocker_off: image::Handle::from_bytes(
+                &include_bytes!("../assets/keyboard/controls/rocker-switch-off.png")[..],
+            ),
+            rocker_on: image::Handle::from_bytes(
+                &include_bytes!("../assets/keyboard/controls/rocker-switch-on.png")[..],
+            ),
+            label_plate: svg::Handle::from_memory(
+                &include_bytes!("../assets/keyboard/controls/label-plate.svg")[..],
+            ),
+            lcd_glass: svg::Handle::from_memory(
+                &include_bytes!("../assets/keyboard/controls/lcd-glass-overlay.svg")[..],
+            ),
+        }
+    }
+}
+
 // Styled after the workshop-built instrument itself: wood-cheeked vintage
 // electronic gear — molded dark control panels, an amber LCD readout, and
 // the salmon accent carried over from the board's own arrow cluster.
@@ -79,6 +151,12 @@ const LCD_BORDER: Color = Color::from_rgb8(0x2a, 0x22, 0x10);
 // (see `width_limited` in `view()`) already accounts for.
 const CHROME_BEZEL: f32 = 5.0;
 const BEZEL_BG: Color = Color::from_rgb8(0x08, 0x09, 0x07);
+// Warm near-blacks — used in place of neutral/pure black on borders and
+// recessed fills so every dark surface in the web chrome stays in the same
+// charcoal-brown family as the board's own molded materials, rather than
+// switching to a colder, razor-sharp black the instant a border darkens.
+const WARM_BLACK: Color = Color::from_rgb8(0x1c, 0x15, 0x0e);
+const WARM_BLACK_DEEP: Color = Color::from_rgb8(0x12, 0x0d, 0x08);
 
 fn app_theme() -> Theme {
     Theme::custom(
@@ -132,9 +210,9 @@ fn textured_panel<'a>(
             })
     };
     let framed = column![
-        hairline(Color::from_rgba(1.0, 1.0, 1.0, 0.06)),
+        hairline(Color::from_rgba8(0xf3, 0xe8, 0xcf, 0.07)),
         content.into(),
-        hairline(Color::from_rgba(0.0, 0.0, 0.0, 0.35)),
+        hairline(WARM_BLACK_DEEP.scale_alpha(0.55)),
     ]
     .spacing(0);
 
@@ -216,12 +294,12 @@ fn crt_screen_style(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(Color::from_rgb8(0x08, 0x09, 0x04))),
         border: Border {
-            color: Color::from_rgb8(0x35, 0x31, 0x22),
-            width: 2.0,
+            color: Color::from_rgb8(0x2b, 0x24, 0x18),
+            width: 3.0,
             radius: 4.0.into(),
         },
         shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.72),
+            color: WARM_BLACK_DEEP.scale_alpha(0.8),
             offset: Vector::new(0.0, 2.0),
             blur_radius: 0.0,
         },
@@ -252,7 +330,7 @@ fn inactive_control_style(_: &Theme) -> container::Style {
         border: Border {
             color: PANEL_BORDER.scale_alpha(0.55),
             width: 1.0,
-            radius: 2.0.into(),
+            radius: 3.0.into(),
         },
         text_color: Some(TEXT_MUTED.scale_alpha(0.6)),
         ..Default::default()
@@ -261,16 +339,18 @@ fn inactive_control_style(_: &Theme) -> container::Style {
 
 /// Amber-on-black status readout — a recessed display let into the panel,
 /// not another equipment-panel surface, so it gets its own darker treatment.
+/// A thicker, darker border than a flush panel control reads as a deeper
+/// inset — the display is let *into* the panel, not sitting on it.
 fn lcd_style(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(LCD_BG)),
         border: Border {
             color: LCD_BORDER,
-            width: 1.0,
-            radius: 2.0.into(),
+            width: 2.0,
+            radius: 3.0.into(),
         },
         shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+            color: WARM_BLACK_DEEP.scale_alpha(0.65),
             offset: Vector::new(0.0, 1.0),
             blur_radius: 0.0,
         },
@@ -287,7 +367,7 @@ fn control_style(_: &Theme, status: button::Status) -> button::Style {
         ),
         button::Status::Hovered => (
             Color::from_rgb(0.225, 0.225, 0.180),
-            Color::WHITE,
+            Color::from_rgb8(0xf7, 0xf0, 0xe0),
             Color::from_rgb(0.520, 0.495, 0.385),
         ),
         button::Status::Pressed => (Color::from_rgb(0.080, 0.085, 0.070), TEXT_MAIN, ACCENT),
@@ -303,10 +383,10 @@ fn control_style(_: &Theme, status: button::Status) -> button::Style {
         border: Border {
             color: border_color,
             width: 1.0,
-            radius: 2.0.into(),
+            radius: 3.0.into(),
         },
         shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+            color: WARM_BLACK_DEEP.scale_alpha(0.4),
             offset: Vector::new(
                 0.0,
                 if status == button::Status::Pressed {
@@ -332,7 +412,7 @@ fn secondary_control_style(_: &Theme, status: button::Status) -> button::Style {
             PANEL_BORDER.scale_alpha(0.5),
         ),
         button::Status::Hovered => (PANEL_BG_DARK, TEXT_MAIN, PANEL_BORDER),
-        button::Status::Pressed => (Color::from_rgb8(0x05, 0x05, 0x04), TEXT_MAIN, ACCENT),
+        button::Status::Pressed => (WARM_BLACK_DEEP, TEXT_MAIN, ACCENT),
         button::Status::Disabled => (
             Color::TRANSPARENT,
             TEXT_MUTED.scale_alpha(0.5),
@@ -345,7 +425,7 @@ fn secondary_control_style(_: &Theme, status: button::Status) -> button::Style {
         border: Border {
             color: border_color,
             width: 1.0,
-            radius: 2.0.into(),
+            radius: 3.0.into(),
         },
         shadow: Shadow::default(),
         snap: false,
@@ -410,7 +490,7 @@ fn channel_pick_list_style(_: &Theme, status: pick_list::Status) -> pick_list::S
         border: Border {
             color: border_color,
             width: 1.0,
-            radius: 2.0.into(),
+            radius: 3.0.into(),
         },
     }
 }
@@ -427,12 +507,12 @@ fn accent_style(_: &Theme, status: button::Status) -> button::Style {
         text_color: if status == button::Status::Disabled {
             TEXT_MUTED
         } else {
-            Color::WHITE
+            Color::from_rgb8(0xfa, 0xf1, 0xe4)
         },
         border: Border {
             color: Color::from_rgb8(0xc1, 0x73, 0x59),
             width: 1.0,
-            radius: 2.0.into(),
+            radius: 3.0.into(),
         },
         shadow: Shadow {
             color: Color::from_rgba(0.45, 0.16, 0.10, 0.36),
@@ -445,7 +525,11 @@ fn accent_style(_: &Theme, status: button::Status) -> button::Style {
 
 /// Chunky tape-deck keys for Play/Pause/Stop. The warm molded face, heavy dark
 /// edge, and raised/pressed shadow states stay reliable across both Iced's
-/// native and web renderers.
+/// native and web renderers. A per-status base color (rather than a single
+/// flat fill) plus the warm border/shadow below is what reads as molded
+/// plastic here — an experiment with a lit-from-above gradient background
+/// made the pressed-state text unreadable in this renderer, so the shading
+/// stays flat-color.
 fn transport_button_style(_: &Theme, status: button::Status) -> button::Style {
     let base = match status {
         button::Status::Active => Color::from_rgb8(0xb7, 0xaa, 0x8d),
@@ -465,15 +549,15 @@ fn transport_button_style(_: &Theme, status: button::Status) -> button::Style {
         },
         border: Border {
             color: if pressed {
-                Color::from_rgb8(0x02, 0x02, 0x02)
+                WARM_BLACK_DEEP
             } else {
-                Color::from_rgb8(0x05, 0x05, 0x05)
+                WARM_BLACK
             },
             width: 2.0,
-            radius: 3.0.into(),
+            radius: 4.0.into(),
         },
         shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.65),
+            color: WARM_BLACK_DEEP.scale_alpha(0.7),
             offset: Vector::new(0.0, if pressed { 0.0 } else { 3.0 }),
             blur_radius: 0.0,
         },
@@ -481,133 +565,464 @@ fn transport_button_style(_: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// A small two-tone rocker-switch look for Loop/Sound — a wide, short
-/// rectangle rather than a pill toggle, still a plain accessible button.
-fn rocker_style(on: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_, status| {
-        let (background, text_color, border_color) = if on {
-            match status {
-                button::Status::Hovered => (Color::from_rgb8(0x30, 0x1e, 0x18), ACCENT, ACCENT),
-                button::Status::Pressed => (Color::from_rgb8(0x14, 0x0e, 0x0c), ACCENT, ACCENT),
-                _ => (Color::from_rgb8(0x20, 0x15, 0x13), ACCENT, ACCENT),
-            }
-        } else {
-            match status {
-                button::Status::Hovered => (PANEL_BG_LIGHT, TEXT_MAIN, PANEL_BORDER),
-                button::Status::Pressed => (PANEL_BG_DARK, TEXT_MAIN, PANEL_BORDER),
-                _ => (PANEL_BG, TEXT_MUTED, PANEL_BORDER),
-            }
-        };
-        button::Style {
-            background: Some(Background::Color(background)),
-            text_color,
-            border: Border {
-                color: border_color,
-                width: 1.0,
-                radius: 2.0.into(),
-            },
-            shadow: Shadow::default(),
-            snap: false,
-        }
+/// A button style with no resting chrome of its own — used to wrap a
+/// decorative canvas (a rocker face, a knob dial) so the canvas art is the
+/// only visible surface, while the button underneath stays the real
+/// clickable/keyboard-focusable control. A faint hover/press wash keeps it
+/// from feeling dead to the pointer.
+fn transparent_control_style(_: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered => Color::from_rgba8(0xf3, 0xe8, 0xcf, 0.06),
+        button::Status::Pressed => WARM_BLACK_DEEP.scale_alpha(0.4),
+        _ => Color::TRANSPARENT,
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: TEXT_MAIN,
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 3.0.into(),
+        },
+        shadow: Shadow::default(),
+        snap: false,
     }
 }
 
-/// A compact two-state rocker switch. Both positions stay visible, matching a
-/// labeled hardware rocker instead of a generic toggle whose state is only
-/// communicated by color.
+/// Renders one rocker-switch state from the shared SVG pair (see
+/// `assets/keyboard/controls/README.md`), stretched to fill its bounds —
+/// purely decorative; the click/keyboard behavior lives on the `button` that
+/// wraps it in [`rocker_switch`].
+struct RockerFace {
+    handle: image::Handle,
+}
+
+impl canvas::Program<Message> for RockerFace {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        frame.draw_image(
+            Rectangle::new(Point::ORIGIN, frame.size()),
+            CanvasImage::new(self.handle.clone()),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A compact hardware rocker switch built from the real on/off SVG asset
+/// pair — its raised-top/raised-bottom geometry *is* the state indicator,
+/// the way a physical rocker works, rather than a color-coded dot.
 fn rocker_switch(
+    assets: &ControlAssets,
     caption: &'static str,
     on: bool,
-    indicator_color: Color,
     on_press: Option<Message>,
 ) -> Element<'static, Message> {
-    let indicator = container(text(""))
-        .width(7)
-        .height(7)
-        .style(move |_: &Theme| container::Style {
-            background: Some(Background::Color(indicator_color)),
-            border: Border {
-                radius: 999.0.into(),
-                ..Default::default()
-            },
-            shadow: if on {
-                Shadow {
-                    color: indicator_color.scale_alpha(0.75),
-                    offset: Vector::new(0.0, 0.0),
-                    blur_radius: 6.0,
-                }
-            } else {
-                Shadow::default()
-            },
-            ..Default::default()
-        });
-    let off_color = if on {
-        TEXT_MUTED.scale_alpha(0.45)
+    let handle = if on {
+        assets.rocker_on.clone()
     } else {
-        TEXT_MAIN
+        assets.rocker_off.clone()
     };
-    let on_color = if on {
-        indicator_color
-    } else {
-        TEXT_MUTED.scale_alpha(0.45)
-    };
+    let face = Canvas::new(RockerFace { handle })
+        .width(Length::Fixed(15.0))
+        .height(Length::Fixed(20.0));
+    let label_color = if on { ACCENT } else { TEXT_MUTED };
     button(
-        column![
-            row![indicator, text(caption).size(9)]
-                .spacing(5)
-                .align_y(Alignment::Center),
-            row![
-                text("OFF").size(8).color(off_color),
-                text("│").size(8).color(PANEL_BORDER),
-                text("ON").size(8).color(on_color),
-            ]
-            .spacing(4)
+        row![face, text(caption).size(9).color(label_color)]
+            .spacing(5)
             .align_y(Alignment::Center),
-        ]
-        .spacing(2),
     )
-    .width(Length::Fixed(72.0))
-    .padding([6, 8])
-    .style(rocker_style(on))
+    .padding([4, 6])
+    .style(transparent_control_style)
     .on_press_maybe(on_press)
     .into()
 }
 
-/// A horizontal hardware fader: a narrow dark slot with a small rectangular
-/// beige thumb, in place of a rounded web slider.
-fn fader_style(_: &Theme, _status: slider::Status) -> slider::Style {
-    slider::Style {
-        rail: slider::Rail {
-            backgrounds: (
-                Background::Color(Color::from_rgb8(0x05, 0x05, 0x04)),
-                Background::Color(Color::from_rgb8(0x05, 0x05, 0x04)),
+/// A rotary knob dial: a faint tick ring, the shared photographic knob-face
+/// asset — held at a fixed orientation, per the asset README, since the face
+/// itself is never meant to rotate — and a hand-drawn pointer swept across
+/// the same -135°..+135° arc as the ticks.
+struct KnobDial {
+    face: image::Handle,
+    angle: Radians,
+}
+
+impl canvas::Program<Message> for KnobDial {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let center = Point::new(frame.width() / 2.0, frame.height() / 2.0);
+        let radius = frame.width().min(frame.height()) / 2.0;
+
+        // A soft cast shadow, offset down, sells the knob as a raised molded
+        // cap sitting above the panel rather than a flat printed circle.
+        frame.fill(
+            &Path::circle(Point::new(center.x, center.y + radius * 0.12), radius * 0.86),
+            WARM_BLACK_DEEP.scale_alpha(0.4),
+        );
+
+        const TICKS: usize = 11;
+        const SWEEP_DEG: f32 = 270.0;
+        for i in 0..TICKS {
+            let t = i as f32 / (TICKS - 1) as f32;
+            let angle = (-SWEEP_DEG / 2.0 + t * SWEEP_DEG).to_radians();
+            let (sin, cos) = angle.sin_cos();
+            let tall = i == 0 || i == TICKS - 1 || i == TICKS / 2;
+            let inner = radius - if tall { 4.5 } else { 2.5 };
+            let outer = radius + 0.5;
+            frame.stroke(
+                &Path::line(
+                    Point::new(center.x + sin * inner, center.y - cos * inner),
+                    Point::new(center.x + sin * outer, center.y - cos * outer),
+                ),
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba8(0x91, 0x8c, 0x7d, 0.5))
+                    .with_width(1.0),
+            );
+        }
+
+        let face_size = radius * 1.6;
+        frame.draw_image(
+            Rectangle::new(
+                Point::new(center.x - face_size / 2.0, center.y - face_size / 2.0),
+                Size::new(face_size, face_size),
             ),
-            width: 4.0,
-            border: Border {
-                color: Color::from_rgb8(0x2a, 0x29, 0x22),
-                width: 1.0,
-                radius: 2.0.into(),
-            },
-        },
-        handle: slider::Handle {
-            shape: slider::HandleShape::Rectangle {
-                width: 10,
-                border_radius: 2.0.into(),
-            },
-            background: Background::Color(Color::from_rgb8(0xb7, 0xaa, 0x8d)),
-            border_width: 1.0,
-            border_color: Color::from_rgb8(0x05, 0x05, 0x05),
+            CanvasImage::new(self.face.clone()),
+        );
+
+        frame.with_save(|frame| {
+            frame.translate(Vector::new(center.x, center.y));
+            frame.rotate(self.angle);
+            frame.stroke(
+                &Path::line(
+                    Point::new(0.0, -face_size * 0.10),
+                    Point::new(0.0, -face_size * 0.46),
+                ),
+                canvas::Stroke::default()
+                    .with_color(ACCENT)
+                    .with_width(2.0)
+                    .with_line_cap(canvas::LineCap::Round),
+            );
+        });
+        frame.fill(&Path::circle(center, face_size * 0.07), WARM_BLACK_DEEP);
+
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Fully invisible `pick_list` chrome — used to keep the real, accessible
+/// dropdown as the interactive layer of a [`rotary_knob`] while its native
+/// box/arrow never paint over the knob-dial artwork drawn beneath it.
+fn invisible_pick_list_style(_: &Theme, _status: pick_list::Status) -> pick_list::Style {
+    pick_list::Style {
+        text_color: Color::TRANSPARENT,
+        placeholder_color: Color::TRANSPARENT,
+        handle_color: Color::TRANSPARENT,
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 0.0.into(),
         },
     }
 }
 
-/// Evenly spaced hardware-fader tick marks, drawn as a static backdrop layer
-/// behind the scrubber (see its `Stack::push_under` usage) — the slider
-/// itself stays a real, fully functional `range` input; this only adds the
-/// decorative ticks a physical fader would have alongside its slot.
-struct FaderTicks;
+/// A compact rotary hardware control for a per-track CH/OCT selector: the
+/// [`KnobDial`] visual (tick ring, face, pointer) with a real `pick_list`
+/// overlaid on top — invisible, but still the actual keyboard-accessible
+/// control, sized to roughly cover the dial (see the `Stack::push_under`
+/// idiom used for the fader below). The caption/value print beside the dial
+/// rather than stacked above and below it, so the whole control stays no
+/// taller than the mixer strip's other controls — see "do not increase mixer
+/// height" in the design brief.
+fn rotary_knob<'a, T>(
+    assets: &ControlAssets,
+    caption: &'static str,
+    value_label: String,
+    angle_fraction: f32,
+    options: Vec<T>,
+    selected: Option<T>,
+    on_select: impl Fn(T) -> Message + 'a,
+) -> Element<'a, Message>
+where
+    T: ToString + PartialEq + Clone + 'a,
+{
+    const SIZE: f32 = 24.0;
+    let angle = Radians(
+        (-135.0 + angle_fraction.clamp(0.0, 1.0) * 270.0).to_radians(),
+    );
+    let dial = Canvas::new(KnobDial {
+        face: assets.rotary_knob_face.clone(),
+        angle,
+    })
+    .width(Length::Fixed(SIZE))
+    .height(Length::Fixed(SIZE));
+    let picker = pick_list(options, selected, on_select)
+        .text_size(11)
+        .padding([5, 2])
+        .width(Length::Fixed(SIZE))
+        .style(invisible_pick_list_style);
+    let control: Element<Message> = Stack::new()
+        .width(Length::Fixed(SIZE))
+        .height(Length::Fixed(SIZE))
+        .push(dial)
+        .push_under(picker)
+        .into();
+    row![
+        control,
+        column![
+            text(caption).size(8).color(TEXT_MUTED),
+            text(value_label).size(11).color(TEXT_MAIN),
+        ]
+        .spacing(0),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center)
+    .into()
+}
 
-impl canvas::Program<Message> for FaderTicks {
+/// A tiny mounted indicator lamp: the shared neutral lens/bezel asset with
+/// the track color composited as the lamp's own light source underneath it
+/// — glowing only when lit — so it reads as physical hardware rather than a
+/// flat CSS dot.
+struct LedJewel {
+    handle: image::Handle,
+    color: Color,
+    lit: bool,
+}
+
+impl canvas::Program<Message> for LedJewel {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let center = Point::new(frame.width() / 2.0, frame.height() / 2.0);
+        let radius = frame.width().min(frame.height()) / 2.0;
+        if self.lit {
+            // Radii stay within the canvas's own half-width (not its corner
+            // reach) so the glow reads as a soft circular halo — earlier
+            // scales here exceeded the canvas's half-diagonal and flooded
+            // every pixel, corners included, into one flat tinted square.
+            for (scale, alpha) in [(1.0, 0.20), (0.72, 0.34), (0.46, 0.85)] {
+                frame.fill(
+                    &Path::circle(center, radius * scale),
+                    self.color.scale_alpha(alpha),
+                );
+            }
+        } else {
+            frame.fill(
+                &Path::circle(center, radius * 0.65),
+                Color::from_rgba8(0x2a, 0x29, 0x22, 0.6),
+            );
+        }
+        frame.draw_image(
+            Rectangle::new(Point::ORIGIN, frame.size()),
+            CanvasImage::new(self.handle.clone()),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A small mounted LED jewel — see [`LedJewel`] — sized like a real
+/// panel-mount indicator lamp rather than a large status dot.
+fn led_jewel(assets: &ControlAssets, color: Color, lit: bool) -> Element<'static, Message> {
+    Canvas::new(LedJewel {
+        handle: assets.led_jewel.clone(),
+        color,
+        lit,
+    })
+    .width(Length::Fixed(12.0))
+    .height(Length::Fixed(12.0))
+    .into()
+}
+
+/// Stretches the shared recessed label-plate asset to fill its bounds —
+/// backdrop layer for [`label_plate`].
+struct LabelPlateBg {
+    handle: svg::Handle,
+}
+
+impl canvas::Program<Message> for LabelPlateBg {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        frame.draw_svg(
+            Rectangle::new(Point::ORIGIN, frame.size()),
+            svg::Svg::new(self.handle.clone()),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// A track name set into a physical recessed label plate — the real asset
+/// behind warm off-white text — instead of sitting in an HTML-input-looking
+/// box on the bare panel surface.
+fn label_plate<'a>(assets: &ControlAssets, label: String) -> Element<'a, Message> {
+    let content = container(text(label).size(12).color(Color::from_rgb8(0xe6, 0xdf, 0xcb)))
+        .padding([3, 10])
+        .align_y(Alignment::Center);
+    Stack::new()
+        .push(content)
+        .push_under(
+            Canvas::new(LabelPlateBg {
+                handle: assets.label_plate.clone(),
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .into()
+}
+
+/// Stretches the shared low-opacity LCD glass overlay to fill its bounds —
+/// the topmost layer over the amber readout, giving it recessed, under-glass
+/// depth instead of a flat rectangle.
+struct LcdGlassOverlay {
+    /// `None` skips the sheen entirely — the shared glass SVG's reflection
+    /// streaks are calibrated for the header LCD's wide, short aspect and
+    /// warp into a visible curved artifact when stretched over a very
+    /// differently-shaped display (the visualizer), so that one gets the
+    /// vignette below with no glass drawn over it.
+    handle: Option<svg::Handle>,
+}
+
+impl canvas::Program<Message> for LcdGlassOverlay {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        if let Some(handle) = &self.handle {
+            frame.draw_svg(
+                Rectangle::new(Point::ORIGIN, frame.size()),
+                svg::Svg::new(handle.clone()),
+            );
+        }
+        // A restrained vignette — a few inset strokes fading toward the
+        // edge — reads as a deeper recess without brightening or otherwise
+        // drawing attention away from the amber content itself.
+        let size = frame.size();
+        for (inset, alpha) in [(0.5, 0.35), (2.5, 0.18), (5.0, 0.08)] {
+            let path = Path::new(|b| {
+                b.rounded_rectangle(
+                    Point::new(inset, inset),
+                    Size::new(
+                        (size.width - inset * 2.0).max(0.0),
+                        (size.height - inset * 2.0).max(0.0),
+                    ),
+                    4.0.into(),
+                );
+            });
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(WARM_BLACK_DEEP.scale_alpha(alpha))
+                    .with_width(1.0),
+            );
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Layers the shared LCD glass overlay on top of an existing display's
+/// content — bezel → LCD surface → amber content already drawn by `content`
+/// → glass, with the glass painted last so it always reads above the data.
+fn lcd_glass_wrap<'a>(
+    assets: &ControlAssets,
+    content: Element<'a, Message>,
+    with_sheen: bool,
+) -> Element<'a, Message> {
+    Stack::new()
+        .push(content)
+        .push(
+            Canvas::new(LcdGlassOverlay {
+                handle: with_sheen.then(|| assets.lcd_glass.clone()),
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .into()
+}
+
+/// A horizontal hardware fader: a narrow dark slot with the shared
+/// photographic fader-cap thumb, in place of a rounded web slider. The
+/// handle/rail chrome is fully transparent — [`FaderTrack`] draws the actual
+/// slot, ticks, and cap underneath as a backdrop layer (see its
+/// `Stack::push_under` usage), so this real `slider` stays only the
+/// invisible, fully functional interactive surface.
+fn fader_style(_: &Theme, _status: slider::Status) -> slider::Style {
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (
+                Background::Color(Color::TRANSPARENT),
+                Background::Color(Color::TRANSPARENT),
+            ),
+            width: 1.0,
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: 0.0.into(),
+            },
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Rectangle {
+                width: 1,
+                border_radius: 0.0.into(),
+            },
+            background: Background::Color(Color::TRANSPARENT),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+        },
+    }
+}
+
+/// The physical fader's recessed slot: a dark inset track, evenly spaced
+/// ticks, and the shared fader-cap asset positioned at the current value —
+/// drawn as a backdrop layer under the real, fully functional slider (see
+/// its `Stack::push_under` usage), which stays the interactive/accessible
+/// base and never has its hit-testing intercepted by this decoration.
+struct FaderTrack {
+    progress: f32,
+    cap: image::Handle,
+}
+
+impl canvas::Program<Message> for FaderTrack {
     type State = ();
 
     fn draw(
@@ -621,6 +1036,18 @@ impl canvas::Program<Message> for FaderTicks {
         let mut frame = Frame::new(renderer, bounds.size());
         let width = frame.width();
         let mid_y = frame.height() / 2.0;
+
+        frame.fill(
+            &Path::rectangle(Point::new(0.0, mid_y - 2.0), Size::new(width, 4.0)),
+            WARM_BLACK_DEEP,
+        );
+        frame.stroke(
+            &Path::rectangle(Point::new(0.5, mid_y - 2.0), Size::new((width - 1.0).max(0.0), 4.0)),
+            canvas::Stroke::default()
+                .with_color(PANEL_BORDER.scale_alpha(0.7))
+                .with_width(1.0),
+        );
+
         const TICK_COUNT: usize = 11;
         for i in 0..TICK_COUNT {
             let x = width * (i as f32) / (TICK_COUNT - 1) as f32;
@@ -634,6 +1061,16 @@ impl canvas::Program<Message> for FaderTicks {
                 Color::from_rgba8(0x91, 0x8c, 0x7d, 0.45),
             );
         }
+
+        let cap_w = width.min(20.0);
+        let cap_h = cap_w * (572.0 / 1024.0);
+        let half = cap_w / 2.0;
+        let x = (width * self.progress.clamp(0.0, 1.0)).clamp(half, (width - half).max(half));
+        frame.draw_image(
+            Rectangle::new(Point::new(x - half, mid_y - cap_h / 2.0), Size::new(cap_w, cap_h)),
+            CanvasImage::new(self.cap.clone()),
+        );
+
         vec![frame.into_geometry()]
     }
 }
@@ -834,6 +1271,7 @@ struct App {
     window_size: Size,
     photo_assets: PhotoBoardAssets,
     chrome_assets: ChromeAssets,
+    control_assets: ControlAssets,
 
     // keyboard
     keys: Vec<Key>,
@@ -973,6 +1411,7 @@ impl Default for App {
             window_size: Size::new(1520.0, 900.0),
             photo_assets: PhotoBoardAssets::new(),
             chrome_assets: ChromeAssets::new(),
+            control_assets: ControlAssets::new(),
 
             keyboard_notes: layout.keyboard_notes,
             keyboard_notes_sorted,
@@ -2929,6 +3368,7 @@ impl App {
             .style(lcd_style)
             .into()
         };
+        let meta = lcd_glass_wrap(&self.control_assets, meta, true);
 
         let step_label = if self.pitch_step == 12 { "OCT" } else { "ST" };
         let layout_label = self.key_pick_mode.label();
@@ -3219,13 +3659,9 @@ impl App {
             "LOOP"
         };
         let looper_btn = rocker_switch(
+            &self.control_assets,
             looper_caption,
             self.looper_enabled,
-            if self.looper_enabled {
-                ACCENT
-            } else {
-                TEXT_MUTED.scale_alpha(0.4)
-            },
             Some(Message::ToggleLooper),
         );
 
@@ -3266,28 +3702,21 @@ impl App {
         } else {
             "SOUND"
         };
-        let sound_indicator = if self.audio_error.is_some() {
-            Color::from_rgb8(0xff, 0x40, 0x30)
-        } else if sound_on {
-            ACCENT
-        } else {
-            TEXT_MUTED.scale_alpha(0.4)
-        };
         let audio_btn = tooltip(
             rocker_switch(
+                &self.control_assets,
                 sound_caption,
                 sound_on,
-                sound_indicator,
                 audio_available.then_some(Message::ToggleAudio),
             ),
             container(text(audio_label).size(11).color(TEXT_MAIN))
                 .padding([4, 8])
                 .style(|_: &Theme| container::Style {
-                    background: Some(Background::Color(Color::from_rgb8(0x05, 0x05, 0x04))),
+                    background: Some(Background::Color(WARM_BLACK_DEEP)),
                     border: Border {
                         color: PANEL_BORDER,
                         width: 1.0,
-                        radius: 2.0.into(),
+                        radius: 3.0.into(),
                     },
                     ..Default::default()
                 }),
@@ -3334,16 +3763,20 @@ impl App {
                 .width(Length::Fill)
                 .into()
         };
-        // Tick marks sit behind the real slider — pushed under it, so the
-        // slider (the sizing base) stays the fully functional control and the
-        // ticks are purely decorative backdrop, never intercepting input.
+        // The recessed slot, ticks, and fader-cap sit behind the real slider
+        // — pushed under it, so the slider (the sizing base) stays the fully
+        // functional control and the artwork is purely decorative backdrop,
+        // never intercepting input.
         let scrubber: Element<Message> = Stack::new()
             .width(Length::Fill)
             .push(slider_widget)
             .push_under(
-                Canvas::new(FaderTicks)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
+                Canvas::new(FaderTrack {
+                    progress,
+                    cap: self.control_assets.fader_cap.clone(),
+                })
+                .width(Length::Fill)
+                .height(Length::Fill),
             )
             .into();
 
@@ -3402,71 +3835,50 @@ impl App {
                         let label = format!("{}: {}", i + 1, name);
                         let muted = self.track_muted.get(i).copied().unwrap_or(false);
                         let (r, g, b) = render::TRACK_COLORS[i % render::TRACK_COLORS.len()];
-                        // A round LED, glowing in the track's own color.
-                        let led = container(text("")).width(10).height(10).style(move |_| {
-                            container::Style {
-                                background: Some(Background::Color(Color::from_rgb8(r, g, b))),
-                                border: Border {
-                                    radius: 999.0.into(),
-                                    ..Default::default()
-                                },
-                                shadow: Shadow {
-                                    color: Color::from_rgba8(r, g, b, 0.65),
-                                    offset: Vector::new(0.0, 0.0),
-                                    blur_radius: 8.0,
-                                },
-                                ..Default::default()
-                            }
-                        });
-                        // The track name sits on its own recessed label plate
-                        // rather than straight on the panel surface.
-                        let name_plate = container(text(label).size(12).color(TEXT_MAIN))
-                            .padding([3, 8])
-                            .style(|_| container::Style {
-                                background: Some(Background::Color(PANEL_BG_DARK)),
-                                border: Border {
-                                    color: PANEL_BORDER,
-                                    width: 1.0,
-                                    radius: 2.0.into(),
-                                },
-                                ..Default::default()
-                            });
+                        // A tiny mounted LED jewel, lit in the track's own color.
+                        let led = led_jewel(&self.control_assets, Color::from_rgb8(r, g, b), true);
+                        // The track name sits set into its own recessed label
+                        // plate rather than straight on the panel surface.
+                        let name_plate = label_plate(&self.control_assets, label);
                         let mute_btn = rocker_switch(
+                            &self.control_assets,
                             "MUTE",
                             muted,
-                            if muted {
-                                ACCENT
-                            } else {
-                                TEXT_MUTED.scale_alpha(0.4)
-                            },
                             Some(Message::TrackMuted(i, !muted)),
                         );
                         let channel = self.track_channel.get(i).copied().unwrap_or(0);
-                        let channel_picker = pick_list(
+                        let channel_knob = rotary_knob(
+                            &self.control_assets,
+                            "CH",
+                            format!("{}", channel + 1),
+                            channel as f32 / 15.0,
                             channel_options("CH"),
                             Some(ChannelOption {
                                 prefix: "CH",
                                 channel: channel + 1,
                             }),
                             move |opt: ChannelOption| Message::TrackChannel(i, opt.channel - 1),
-                        )
-                        .text_size(11)
-                        .padding([3, 6])
-                        .style(channel_pick_list_style);
+                        );
                         let octave = self.track_octave.get(i).copied().unwrap_or(0);
-                        let octave_picker = pick_list(
+                        let octave_label = if octave == 0 {
+                            "±0".to_string()
+                        } else {
+                            format!("{octave:+}")
+                        };
+                        let octave_knob = rotary_knob(
+                            &self.control_assets,
+                            "OCT",
+                            octave_label,
+                            (octave + 3) as f32 / 6.0,
                             track_octave_options(),
                             Some(TrackOctaveOption(octave)),
                             move |opt: TrackOctaveOption| Message::TrackOctave(i, opt.0),
-                        )
-                        .text_size(11)
-                        .padding([3, 6])
-                        .style(channel_pick_list_style);
+                        );
                         // Each track is its own bordered mini channel strip —
                         // a distinct module nested in the mixer bed, not a
                         // toolbar row of loose controls.
                         container(
-                            row![led, name_plate, mute_btn, channel_picker, octave_picker]
+                            row![led, name_plate, mute_btn, channel_knob, octave_knob]
                                 .spacing(8)
                                 .align_y(Alignment::Center),
                         )
@@ -3501,27 +3913,13 @@ impl App {
                 let placeholder_items: Vec<Element<Message>> = ["TRACK 1", "TRACK 2", "TRACK 3"]
                     .into_iter()
                     .map(|name| {
-                        let led =
-                            container(text(""))
-                                .width(10)
-                                .height(10)
-                                .style(|_| container::Style {
-                                    background: Some(Background::Color(Color::from_rgb8(
-                                        0x32, 0x31, 0x29,
-                                    ))),
-                                    border: Border {
-                                        color: Color::from_rgb8(0x08, 0x08, 0x06),
-                                        width: 1.0,
-                                        radius: 999.0.into(),
-                                    },
-                                    ..Default::default()
-                                });
+                        let led = led_jewel(&self.control_assets, Color::TRANSPARENT, false);
                         let name_plate =
                             container(text(name).size(12).color(TEXT_MUTED.scale_alpha(0.68)))
                                 .padding([4, 8])
                                 .width(Length::Fill)
                                 .style(inactive_control_style);
-                        let mute = rocker_switch("MUTE", false, TEXT_MUTED.scale_alpha(0.25), None);
+                        let mute = rocker_switch(&self.control_assets, "MUTE", false, None);
                         let channel = container(text("CH  --").size(11))
                             .padding([5, 7])
                             .style(inactive_control_style);
@@ -3711,6 +4109,10 @@ impl App {
         .height(Length::Fill)
         .style(crt_screen_style)
         .into();
+        // The shared LCD sheen is proportioned for the short header display;
+        // on this tall screen it warps into a curved streak. Keep the inset
+        // edge vignette, but omit that aspect-specific SVG layer here.
+        let staff_screen = lcd_glass_wrap(&self.control_assets, staff_screen, false);
         let visualizer_state = if has_file {
             "SIGNAL / STAFF"
         } else {

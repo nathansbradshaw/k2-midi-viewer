@@ -17,7 +17,11 @@ include!(concat!(env!("OUT_DIR"), "/k2_key_sprites.rs"));
 pub struct PhotoBoardAssets {
     pub shell: iced::widget::image::Handle,
     pub leds: iced::widget::image::Handle,
-    pub display: iced::widget::image::Handle,
+    /// Shared control-surface knob face (see
+    /// `assets/keyboard/controls/README.md`) — the same physical-hardware
+    /// asset family used for the mixer's CH/OCT knobs, reused here so the
+    /// board's own 13 parameter knobs read as the same manufactured part.
+    knob_face: iced::widget::image::Handle,
     key_sprites: RefCell<HashMap<(KeyId, u8, bool), iced::widget::image::Handle>>,
 }
 
@@ -27,7 +31,16 @@ impl PhotoBoardAssets {
         Self {
             shell: handle(&include_bytes!("../assets/keyboard/keyboard-clean-mask.png")[..]),
             leds: handle(&include_bytes!("../assets/keyboard/led-panel-board-crop.png")[..]),
-            display: handle(&include_bytes!("../assets/keyboard/display.png")[..]),
+            // Downscaled once from the shared 1024px master, matching
+            // `decode_and_downscale`'s use for the mixer knobs — these dials
+            // render at well under 100px, and handing the GPU that much
+            // minification directly risks the same mip-sampling artifacts
+            // seen there.
+            knob_face: crate::decode_and_downscale(
+                &include_bytes!("../assets/keyboard/controls/rotary-knob-face.png")[..],
+                128,
+                128,
+            ),
             key_sprites: RefCell::new(HashMap::new()),
         }
     }
@@ -321,6 +334,11 @@ pub struct CanvasState {
     /// Play-order badges get the same isolated-layer treatment as the knob
     /// slider popup — see `slider_cache`.
     badge_cache: canvas::Cache,
+    /// The knob pointers (thin strokes, landing late in the same
+    /// hundreds-of-draw-calls overlay frame as every key and the 13 knob
+    /// face images) get the same isolated-layer treatment as `slider_cache`
+    /// — otherwise they silently fail to render at all.
+    knob_pointer_cache: canvas::Cache,
     pressed: Option<KeyId>,
     dragging_knob: Option<u8>,
     /// (cursor Y, knob value) captured on mouse-down, so dragging moves the
@@ -448,6 +466,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         state.overlay_cache.clear(); // highlights can change every 16 ms during playback
+        state.knob_pointer_cache.clear(); // knob values can change just as often
         let active_knob = state.dragging_knob.map(|idx| {
             (
                 idx,
@@ -465,6 +484,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
             });
         });
         let mut badges: Vec<(Rectangle, Vec<usize>)> = Vec::new();
+        let mut knob_pointers: Vec<(Rectangle, f32)> = Vec::new();
         let overlay_geometry = state.overlay_cache.draw(renderer, bounds.size(), |frame| {
             frame.with_clip(canvas_clip(bounds.size()), |frame| {
                 draw_board_overlay(
@@ -483,12 +503,30 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                     self.knob_values,
                     active_knob,
                     &mut badges,
+                    &mut knob_pointers,
                 );
             });
         });
         // Keep interaction imagery separate from the cached photographic base
         // so active, colour-swapped key sprites render above the resting rows.
         let mut geometries = vec![photo_geometry, overlay_geometry];
+
+        // The knob pointers are their own isolated geometry — see
+        // `knob_pointer_cache`'s doc comment for why they can't just be the
+        // last thing drawn into the (already large) overlay frame.
+        if !knob_pointers.is_empty() {
+            let pointer_geometry =
+                state
+                    .knob_pointer_cache
+                    .draw(renderer, bounds.size(), |frame| {
+                        frame.with_clip(canvas_clip(bounds.size()), |frame| {
+                            for (rect, value) in &knob_pointers {
+                                draw_knob_pointer(frame, *rect, *value);
+                            }
+                        });
+                    });
+            geometries.push(pointer_geometry);
+        }
 
         // The knob drag popup is its own isolated geometry — see the
         // `slider_cache` doc comment for why it can't just be the last thing
@@ -600,7 +638,7 @@ fn key_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Rectangle {
                     width: 100.0,
                     height: 90.0,
                 };
-                let diameter = opening.width.min(opening.height) * 0.68;
+                let diameter = opening.width.min(opening.height) * 0.9;
                 Rectangle {
                     x: opening.x + (opening.width - diameter) / 2.0,
                     y: opening.y + (opening.height - diameter) / 2.0,
@@ -617,7 +655,7 @@ fn key_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Rectangle {
                 ];
                 let (bank_x, bank_width, bank_y, bank_height) = banks[group];
                 let segment = bank_width / 4.0;
-                let diameter = bank_height.min(segment) * 0.68;
+                let diameter = bank_height.min(segment) * 0.9;
                 Rectangle {
                     x: bank_x + (within + 0.5) * segment - diameter / 2.0,
                     y: bank_y + (bank_height - diameter) / 2.0,
@@ -722,27 +760,9 @@ fn alpha_text_guide_with_size(
     }
 }
 
-fn numpad_source_rect_with_size(
-    source: SourceRect,
-    size: Size,
-    compact_crop: bool,
-) -> Rectangle {
-    let origin = photo_rect(
-        size,
-        compact_crop,
-        NUMPAD_X,
-        NUMPAD_Y,
-        0.0,
-        0.0,
-    );
-    let opening = photo_rect(
-        size,
-        compact_crop,
-        NUMPAD_X,
-        NUMPAD_Y,
-        NUMPAD_W,
-        NUMPAD_H,
-    );
+fn numpad_source_rect_with_size(source: SourceRect, size: Size, compact_crop: bool) -> Rectangle {
+    let origin = photo_rect(size, compact_crop, NUMPAD_X, NUMPAD_Y, 0.0, 0.0);
+    let opening = photo_rect(size, compact_crop, NUMPAD_X, NUMPAD_Y, NUMPAD_W, NUMPAD_H);
     let x_scale = opening.width / key_geometry::NUMPAD_SOURCE_SIZE.0;
     let y_scale = opening.height / key_geometry::NUMPAD_SOURCE_SIZE.1;
     Rectangle {
@@ -753,11 +773,7 @@ fn numpad_source_rect_with_size(
     }
 }
 
-fn numpad_text_bounds_with_size(
-    key: &Key,
-    size: Size,
-    compact_crop: bool,
-) -> Option<Rectangle> {
+fn numpad_text_bounds_with_size(key: &Key, size: Size, compact_crop: bool) -> Option<Rectangle> {
     let TextGuide::Bounds(bounds) = key_geometry::numpad_text_guide(
         (key.col - 19.0).round() as usize,
         key.row.round() as usize,
@@ -1023,7 +1039,7 @@ fn draw_tape_labels(frame: &mut Frame, size: Size, compact_crop: bool) {
             size: 13.0,
         },
         TapeLabel {
-            text: "HALL EFFECT SWITCHES  /  VELOCITY MEMORY",
+            text: "HALL EFFECT SWITCHES",
             x: 751.0,
             y: 313.0,
             size: 11.0,
@@ -1163,14 +1179,11 @@ fn draw_board_base(frame: &mut Frame, photo_assets: &PhotoBoardAssets, compact_c
     }
 
     frame.draw_image(board, &photo_assets.shell);
-    frame.draw_image(
-        contained_rect(
-            photo_rect(size, compact_crop, 1282.0, 187.0, 233.0, 90.0),
-            447.0,
-            178.0,
-        ),
-        &photo_assets.display,
-    );
+    // The display cutout gets no separate glass image at all — its status
+    // text (see `draw_board_overlay`) sits directly on the near-black cutout
+    // fill drawn above, in the same dark-panel-plus-amber-text material as
+    // the header LCD (see `LCD_BG`/`LCD_TEXT` in main.rs), rather than a
+    // mismatched photographed backlight color.
     frame.draw_image(
         contained_rect(
             photo_rect(size, compact_crop, 1543.0, 189.0, 305.0, 89.0),
@@ -1197,6 +1210,7 @@ fn draw_board_overlay(
     knob_values: &[f32],
     active_knob: Option<(u8, f32)>,
     badges: &mut Vec<(Rectangle, Vec<usize>)>,
+    knob_pointers: &mut Vec<(Rectangle, f32)>,
 ) {
     let size = frame.size();
     let display_bezel_rect = photo_rect(size, compact_crop, 1282.0, 187.0, 233.0, 90.0);
@@ -1209,7 +1223,9 @@ fn draw_board_overlay(
             display_bezel_rect.x + display_bezel_rect.width / 2.0,
             display_bezel_rect.y + display_bezel_rect.height / 2.0,
         ),
-        color: rgb(0xFF, 0xB5, 0x58),
+        // Same amber as the header LCD's own readout text (`LCD_TEXT` in
+        // main.rs) — one on-board display, one off-board, same material.
+        color: rgb(0xE9, 0x9B, 0x24),
         size: iced::Pixels(
             (board_rect(size, compact_crop).width / PHOTO_WIDTH * 14.0).clamp(7.0, 14.0),
         ),
@@ -1242,7 +1258,8 @@ fn draw_board_overlay(
                 .knob_index
                 .and_then(|idx| crate::synth::KNOB_PARAMS.get(idx as usize))
                 .map(|param| param.label);
-            draw_knob(frame, rect, value, label);
+            draw_knob(frame, rect, label, &photo_assets.knob_face);
+            knob_pointers.push((rect, value));
             continue;
         }
 
@@ -1250,8 +1267,7 @@ fn draw_board_overlay(
         let press_offset = lit_track
             .map(|_| (rect.height * 0.055).clamp(1.0, 4.0))
             .unwrap_or(0.0);
-        let mut sprite_rect =
-            key_sprite_rect_with_size(key, size, compact_crop, show_drum_symbols);
+        let mut sprite_rect = key_sprite_rect_with_size(key, size, compact_crop, show_drum_symbols);
         sprite_rect.y += press_offset;
         if let Some(sprite) = photo_assets.key_sprite(key, lit_track, show_drum_symbols) {
             frame.draw_image(sprite_rect, &sprite);
@@ -1942,7 +1958,12 @@ fn rounded_rect(rect: Rectangle, radius: f32) -> Path {
     })
 }
 
-fn draw_knob(frame: &mut Frame, rect: Rectangle, value: f32, label: Option<&str>) {
+fn draw_knob(
+    frame: &mut Frame,
+    rect: Rectangle,
+    label: Option<&str>,
+    face: &iced::widget::image::Handle,
+) {
     let center = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
     let radius = rect.width.min(rect.height) / 2.0 - 4.0;
 
@@ -1951,17 +1972,64 @@ fn draw_knob(frame: &mut Frame, rect: Rectangle, value: f32, label: Option<&str>
         Color::from_rgba8(0, 0, 0, 0.45),
     );
 
-    let base = Path::circle(center, radius);
-    frame.fill(&base, rgb(0x13, 0x12, 0x1C));
-    frame.stroke(
-        &base,
-        canvas::Stroke::default()
-            .with_color(rgb(0x6A, 0x60, 0x48))
-            .with_width(1.0),
+    // Tick ring, same -135°..+135° sweep as the pointer, matching the mixer's
+    // CH/OCT knob dial (see `rotary_knob`/`KnobDial` in main.rs) so both
+    // control families read as one manufactured product.
+    const TICKS: usize = 11;
+    const SWEEP_DEG: f32 = 270.0;
+    for i in 0..TICKS {
+        let t = i as f32 / (TICKS - 1) as f32;
+        let tick_angle = (-SWEEP_DEG / 2.0 + t * SWEEP_DEG).to_radians();
+        let (s, c) = tick_angle.sin_cos();
+        let tall = i == 0 || i == TICKS - 1 || i == TICKS / 2;
+        let inner = radius - if tall { radius * 0.22 } else { radius * 0.12 };
+        let outer = radius + 1.0;
+        frame.stroke(
+            &Path::line(
+                Point::new(center.x + s * inner, center.y - c * inner),
+                Point::new(center.x + s * outer, center.y - c * outer),
+            ),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgba8(0xB8, 0xAD, 0x8E, 0.5))
+                .with_width(1.0),
+        );
+    }
+
+    let face_size = radius * 1.6;
+    frame.draw_image(
+        Rectangle::new(
+            Point::new(center.x - face_size / 2.0, center.y - face_size / 2.0),
+            Size::new(face_size, face_size),
+        ),
+        face,
     );
 
-    let knurl = Path::circle(center, radius * 0.55);
-    frame.fill(&knurl, rgb(0x25, 0x27, 0x1D));
+    // The pointer itself is drawn later, in its own isolated geometry layer
+    // — see `knob_pointer_cache`'s doc comment. A thin stroke this late in a
+    // frame already packed with 13 knob images and ~100 other keys silently
+    // fails to render at all; it needs to be the only thing in its frame.
+    if let Some(label) = label {
+        let label_size = (rect.width * 0.16).clamp(4.0, 8.0);
+        frame.fill_text(Text {
+            content: label.to_string(),
+            position: Point::new(center.x, rect.y + rect.height + label_size + 1.0),
+            color: rgb(0xB8, 0xAD, 0x8E),
+            size: iced::Pixels(label_size),
+            font: CANVAS_FONT,
+            align_x: Horizontal::Center.into(),
+            align_y: Vertical::Center,
+            ..Text::default()
+        });
+    }
+}
+
+/// Draws one knob's pointer, tip, and center pin — split out of [`draw_knob`]
+/// into its own isolated geometry layer (see `knob_pointer_cache`'s doc
+/// comment) since a thin stroke this late in the packed overlay frame
+/// silently fails to render at all.
+fn draw_knob_pointer(frame: &mut Frame, rect: Rectangle, value: f32) {
+    let center = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+    let radius = rect.width.min(rect.height) / 2.0 - 4.0;
 
     // Sweeps -135°..+135° (bottom-left to bottom-right through the top) as
     // `value` goes 0.0..=1.0, mirroring a real knob's travel.
@@ -1978,23 +2046,29 @@ fn draw_knob(frame: &mut Frame, rect: Rectangle, value: f32, label: Option<&str>
         &pointer,
         canvas::Stroke::default()
             .with_color(rgb(0xFF, 0x76, 0x7B))
-            .with_width(2.5),
+            .with_width(2.5)
+            .with_line_cap(canvas::LineCap::Round),
     );
-    frame.fill(&Path::circle(tip, 2.5), rgb(0xFF, 0x76, 0x7B));
-
-    if let Some(label) = label {
-        let label_size = (rect.width * 0.16).clamp(4.0, 8.0);
-        frame.fill_text(Text {
-            content: label.to_string(),
-            position: Point::new(center.x, rect.y + rect.height + label_size + 1.0),
-            color: rgb(0xB8, 0xAD, 0x8E),
-            size: iced::Pixels(label_size),
-            font: CANVAS_FONT,
-            align_x: Horizontal::Center.into(),
-            align_y: Vertical::Center,
-            ..Text::default()
-        });
-    }
+    // Zero-length round-capped strokes in place of `frame.fill`-drawn dots —
+    // plain fills silently fail to render anywhere in this board canvas's
+    // cache-backed pipeline (reproduced with fills of every size/color, in
+    // both the packed overlay frame and this isolated layer), while strokes
+    // render reliably; a stroke this short with a round cap paints as a
+    // filled disc of radius = width / 2.
+    frame.stroke(
+        &Path::line(tip, tip),
+        canvas::Stroke::default()
+            .with_color(rgb(0xFF, 0x76, 0x7B))
+            .with_width(5.0)
+            .with_line_cap(canvas::LineCap::Round),
+    );
+    frame.stroke(
+        &Path::line(center, center),
+        canvas::Stroke::default()
+            .with_color(rgb(0x0B, 0x0B, 0x09))
+            .with_width(radius * 0.18)
+            .with_line_cap(canvas::LineCap::Round),
+    );
 }
 
 #[cfg(test)]
