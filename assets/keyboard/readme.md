@@ -198,10 +198,11 @@ Active keys only select a cached prebuilt handle and apply a small downward
 travel; no flood fill or per-pixel colour work runs during playback. The old
 row strips are no longer visible beneath those sprites.
 
-The alpha-row cell boundary includes the photographed side bevel needed to
-keep resting keys visually continuous. Build-time colour replacement leaves
-that overlap at its original material colour, preventing it from becoming the
-detached coloured sliver seen in the earlier runtime-filter implementation.
+The alpha-row crops and hit bounds now use the measured red separators from the
+annotated row copies in `src/key_geometry.rs`. Each crop contains its target
+key's photographed side bevel, so build-time colour replacement recolours that
+bevel completely; preserving an old-colour strip at the left edge is no longer
+necessary on annotated rows.
 
 Tape ink is rendered from the centralized manifest in `src/render.rs` using the
 bundled Permanent Marker font. Board hardware, labels, key sprites, knobs, hit
@@ -261,8 +262,10 @@ the fourth row and `bottom row.png` is the fifth.
 ## Geometry and extraction contract
 
 The five alpha-row sources are approximately 2,120 × 180 pixels and share a
-15-unit horizontal coordinate system. Extract sprites by unit boundaries so
-the original photographic pixels remain unchanged.
+15-unit logical coordinate system. Extract sprites using the measured pixel
+separators in `src/key_geometry.rs`; the logical grid remains the fallback and
+continues to define key order and bottom-row gaps. The original photographic
+pixels remain unchanged.
 
 - Top and third rows: 1.5-unit first key, twelve 1-unit keys, 1.5-unit last key.
 - Second and fourth rows: fifteen 1-unit keys.

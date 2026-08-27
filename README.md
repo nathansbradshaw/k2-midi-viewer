@@ -48,10 +48,12 @@ Firefox for Android does not support Web MIDI.
 
 ## Key-image annotations
 
-Annotated copies let the renderer extract precise key and label geometry. The
-second- and third-row trials support both tested text-guide styles; the remaining
-rows are future asset work. Keep the originals unchanged and preserve the exact
-image dimensions. On each annotated copy:
+Annotated copies let the renderer extract precise key and label geometry. All
+five alpha-row copies now supply text guides and calibrated boundaries; the
+fourth row's final divider is temporarily inferred from its photographic valley
+until that missing red mark is added. The navigation, arrow, and numpad source
+images remain future annotation work. Keep the originals unchanged and preserve
+the exact image dimensions. On each annotated copy:
 
 - Draw every key boundary in solid red, including unambiguous borders where keys
   touch.
@@ -61,7 +63,7 @@ image dimensions. On each annotated copy:
   needed.
 - Use opaque, non-antialiased marks when possible so the colors are easy to detect
   programmatically.
-- Name the copy after the original with an `_annotated` suffix.
+- Name the copy after the original with an `_annotated` suffix or ` copy`.
 
 The red guides drive sprite extraction and hit geometry; the purple or yellow
 guides drive label placement.

@@ -5,9 +5,9 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::widget::canvas::{self, Frame, Geometry, Path, Text};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse, touch};
 
+use crate::Message;
 use crate::key::{Cluster, Key, KeyId};
 use crate::key_geometry::{self, SourceRect, TextGuide};
-use crate::Message;
 
 include!(concat!(env!("OUT_DIR"), "/k2_key_sprites.rs"));
 
@@ -49,10 +49,11 @@ impl PhotoBoardAssets {
         if let Some(handle) = self.key_sprites.borrow().get(&(key.id, variant)).cloned() {
             return Some(handle);
         }
-        let handle = iced::widget::image::Handle::from_bytes(
-            preprocessed_key_sprite(key.id.0, variant)?,
-        );
-        self.key_sprites.borrow_mut().insert((key.id, variant), handle.clone());
+        let handle =
+            iced::widget::image::Handle::from_bytes(preprocessed_key_sprite(key.id.0, variant)?);
+        self.key_sprites
+            .borrow_mut()
+            .insert((key.id, variant), handle.clone());
         Some(handle)
     }
 }
@@ -80,7 +81,7 @@ pub struct BoardCanvas<'a> {
     /// Keep the board at its width-derived scale and let the canvas clip the
     /// excess top/bottom instead of shrinking the whole instrument.
     pub compact_crop: bool,
-    pub keys:        &'a [Key],
+    pub keys: &'a [Key],
     /// Maps KeyId → track index for color. usize::MAX = manually toggled (uses original colour).
     pub highlighted: &'a HashMap<KeyId, usize>,
     /// Optional live overlay (for browser MIDI input) drawn above the base
@@ -88,7 +89,7 @@ pub struct BoardCanvas<'a> {
     pub overlay_highlighted: Option<&'a HashMap<KeyId, usize>>,
     /// Chronological play steps to badge onto highlighted keys while a staff
     /// range is selected. Chords share a number; repeated keys have several.
-    pub play_order:  Option<&'a HashMap<KeyId, Vec<usize>>>,
+    pub play_order: Option<&'a HashMap<KeyId, Vec<usize>>>,
     /// Persistently-active control keys (e.g. layered waveform selects),
     /// independent of playback note overlays.
     pub selected_controls: &'a HashSet<KeyId>,
@@ -346,7 +347,8 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                         if key_rect_with_size(key, bounds.size(), self.compact_crop).contains(pos) {
                             if let Some(idx) = key.knob_index {
                                 state.dragging_knob = Some(idx);
-                                let current = self.knob_values.get(idx as usize).copied().unwrap_or(0.0);
+                                let current =
+                                    self.knob_values.get(idx as usize).copied().unwrap_or(0.0);
                                 // Anchor on the cursor's absolute (window) position, not the
                                 // canvas-local one — `CursorMoved` below needs to keep tracking
                                 // the drag even once the pointer leaves the canvas bounds
@@ -357,8 +359,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                             }
                             state.pressed = Some(key.id);
                             return Some(
-                                canvas::Action::publish(Message::KeyPressed(key.id))
-                                    .and_capture(),
+                                canvas::Action::publish(Message::KeyPressed(key.id)).and_capture(),
                             );
                         }
                     }
@@ -371,7 +372,9 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                     // pointer is free to move outside the canvas (e.g.
                     // above a top-row knob) and should keep being tracked.
                     if let Some(pos) = cursor.position() {
-                        if let Some(knob_rect) = self.keys.iter()
+                        if let Some(knob_rect) = self
+                            .keys
+                            .iter()
                             .find(|key| key.knob_index == Some(idx))
                             .map(|key| key_rect_with_size(key, bounds.size(), self.compact_crop))
                         {
@@ -393,10 +396,7 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                     return Some(canvas::Action::capture());
                 }
                 if let Some(id) = state.pressed.take() {
-                    return Some(
-                        canvas::Action::publish(Message::KeyReleased(id))
-                            .and_capture(),
-                    );
+                    return Some(canvas::Action::publish(Message::KeyReleased(id)).and_capture());
                 }
             }
             // Hovering a knob and scrolling nudges its value — much easier
@@ -410,7 +410,8 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
                                     mouse::ScrollDelta::Lines { y, .. } => y * 0.05,
                                     mouse::ScrollDelta::Pixels { y, .. } => y / 200.0,
                                 };
-                                let current = self.knob_values.get(idx as usize).copied().unwrap_or(0.0);
+                                let current =
+                                    self.knob_values.get(idx as usize).copied().unwrap_or(0.0);
                                 let value = (current + amount).clamp(0.0, 1.0);
                                 return Some(
                                     canvas::Action::publish(Message::KnobChanged(idx, value))
@@ -437,7 +438,10 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
     ) -> Vec<Geometry> {
         state.overlay_cache.clear(); // highlights can change every 16 ms during playback
         let active_knob = state.dragging_knob.map(|idx| {
-            (idx, self.knob_values.get(idx as usize).copied().unwrap_or(0.0))
+            (
+                idx,
+                self.knob_values.get(idx as usize).copied().unwrap_or(0.0),
+            )
         });
         let photo_cache = if self.compact_crop {
             &state.photo_crop_cache
@@ -481,7 +485,9 @@ impl<'a> canvas::Program<Message> for BoardCanvas<'a> {
         if let Some((idx, value)) = active_knob {
             state.slider_cache.clear();
             let slider_geometry = state.slider_cache.draw(renderer, bounds.size(), |frame| {
-                if let Some(knob_rect) = self.keys.iter()
+                if let Some(knob_rect) = self
+                    .keys
+                    .iter()
                     .find(|key| key.knob_index == Some(idx))
                     .map(|key| key_rect_with_size(key, bounds.size(), self.compact_crop))
                 {
@@ -569,8 +575,12 @@ fn key_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Rectangle {
         Cluster::Encoder => {
             let index = key.knob_index.unwrap_or(12);
             if index == 12 {
-                let opening: Rectangle =
-                    Rectangle { x: 102.0, y: 187.0, width: 100.0, height: 90.0 };
+                let opening: Rectangle = Rectangle {
+                    x: 102.0,
+                    y: 187.0,
+                    width: 100.0,
+                    height: 90.0,
+                };
                 let diameter = opening.width.min(opening.height) * 0.68;
                 Rectangle {
                     x: opening.x + (opening.width - diameter) / 2.0,
@@ -621,7 +631,10 @@ fn key_sprite_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Recta
         Cluster::Numpad => (598.0 / 4.0 * key.w) / (738.0 / 5.0 * key.h),
         Cluster::Encoder => return rect,
     };
-    Rectangle { height: rect.width / source_aspect, ..rect }
+    Rectangle {
+        height: rect.width / source_aspect,
+        ..rect
+    }
 }
 
 fn alpha_source_rect_with_size(
@@ -633,8 +646,7 @@ fn alpha_source_rect_with_size(
     let (source_width, _) = key_geometry::ALPHA_SOURCE_SIZES[row - 1];
     let row_y = ALPHA_Y + (row as f32 - 1.0) * ALPHA_ROW_PITCH;
     let row_origin = photo_rect(size, compact_crop, ALPHA_X, row_y, 0.0, 0.0);
-    let scale = photo_rect(size, compact_crop, ALPHA_X, row_y, ALPHA_W, 0.0).width
-        / source_width;
+    let scale = photo_rect(size, compact_crop, ALPHA_X, row_y, ALPHA_W, 0.0).width / source_width;
     Rectangle {
         x: row_origin.x + source.x * scale,
         y: row_origin.y + source.y * scale,
@@ -653,7 +665,12 @@ fn alpha_text_guide_with_size(
         TextGuide::Center { x, y } => {
             let point = alpha_source_rect_with_size(
                 row,
-                SourceRect { x, y, width: 0.0, height: 0.0 },
+                SourceRect {
+                    x,
+                    y,
+                    width: 0.0,
+                    height: 0.0,
+                },
                 size,
                 compact_crop,
             );
@@ -662,7 +679,10 @@ fn alpha_text_guide_with_size(
         TextGuide::Bounds(bounds) => {
             let bounds = alpha_source_rect_with_size(row, bounds, size, compact_crop);
             Some((
-                Point::new(bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0),
+                Point::new(
+                    bounds.x + bounds.width / 2.0,
+                    bounds.y + bounds.height / 2.0,
+                ),
                 Some(bounds),
             ))
         }
@@ -709,17 +729,17 @@ fn key_colors(cluster: Cluster, lit_track: Option<usize>) -> (Color, Color) {
     };
 
     let (fill, text) = match (cluster, lit) {
-        (Cluster::Alpha,      false) => (rgb(0x66, 0x75, 0x5E), Color::WHITE),
-        (Cluster::Alpha,      true)  => track_fill(0xFF, 0xA3, 0x55),
+        (Cluster::Alpha, false) => (rgb(0x66, 0x75, 0x5E), Color::WHITE),
+        (Cluster::Alpha, true) => track_fill(0xFF, 0xA3, 0x55),
         (Cluster::AlphaLight, false) => (rgb(0xDF, 0xE3, 0xD2), Color::BLACK),
-        (Cluster::AlphaLight, true)  => track_fill(0xFF, 0xA3, 0x55),
-        (Cluster::Nav,        false) => (rgb(0xC9, 0xC6, 0xBA), Color::BLACK),
-        (Cluster::Nav,        true)  => (rgb(0xFF, 0xB4, 0x58), Color::BLACK),
-        (Cluster::Arrow,      false) => (rgb(0xCF, 0x7F, 0x6C), Color::BLACK),
-        (Cluster::Arrow,      true)  => (rgb(0xFF, 0x4C, 0x82), Color::WHITE),
-        (Cluster::Numpad,     false) => (rgb(0xD9, 0xD4, 0xC8), Color::BLACK),
-        (Cluster::Numpad,     true)  => (rgb(0x50, 0xD4, 0xC8), Color::BLACK),
-        (Cluster::Encoder,    _)     => (rgb(0x1D, 0x1B, 0x28), Color::WHITE),
+        (Cluster::AlphaLight, true) => track_fill(0xFF, 0xA3, 0x55),
+        (Cluster::Nav, false) => (rgb(0xC9, 0xC6, 0xBA), Color::BLACK),
+        (Cluster::Nav, true) => (rgb(0xFF, 0xB4, 0x58), Color::BLACK),
+        (Cluster::Arrow, false) => (rgb(0xCF, 0x7F, 0x6C), Color::BLACK),
+        (Cluster::Arrow, true) => (rgb(0xFF, 0x4C, 0x82), Color::WHITE),
+        (Cluster::Numpad, false) => (rgb(0xD9, 0xD4, 0xC8), Color::BLACK),
+        (Cluster::Numpad, true) => (rgb(0x50, 0xD4, 0xC8), Color::BLACK),
+        (Cluster::Encoder, _) => (rgb(0x1D, 0x1B, 0x28), Color::WHITE),
     };
 
     (fill, text)
@@ -827,40 +847,172 @@ fn draw_tape_labels(frame: &mut Frame, size: Size, compact_crop: bool) {
     let scale = board.width / PHOTO_WIDTH;
     let ink = Color::from_rgba8(0x20, 0x2A, 0x2D, 0.88);
     let labels = [
-        TapeLabel { text: "BITCRUSH", x: 151.0, y: 132.0, size: 15.0 },
-        TapeLabel { text: "VOL", x: 300.0, y: 132.0, size: 15.0 },
-        TapeLabel { text: "CUTOFF", x: 381.0, y: 132.0, size: 13.0 },
-        TapeLabel { text: "ATTACK", x: 462.0, y: 132.0, size: 13.0 },
-        TapeLabel { text: "RELEASE", x: 543.0, y: 132.0, size: 12.0 },
-        TapeLabel { text: "DECAY", x: 650.0, y: 132.0, size: 13.0 },
-        TapeLabel { text: "SUSTAIN", x: 727.0, y: 132.0, size: 12.0 },
-        TapeLabel { text: "DRUM\nVOL", x: 804.0, y: 132.0, size: 11.0 },
-        TapeLabel { text: "PAN", x: 881.0, y: 132.0, size: 14.0 },
-        TapeLabel { text: "VIB RATE", x: 986.0, y: 132.0, size: 11.0 },
-        TapeLabel { text: "VIB DEPTH", x: 1063.0, y: 132.0, size: 10.5 },
-        TapeLabel { text: "TREMOLO", x: 1141.0, y: 132.0, size: 11.0 },
-        TapeLabel { text: "GLIDE", x: 1218.0, y: 132.0, size: 13.0 },
-        TapeLabel { text: "MIDI\nSEND", x: 1594.0, y: 132.0, size: 13.0 },
-        TapeLabel { text: "MIDI\nRECV", x: 1695.0, y: 132.0, size: 13.0 },
-        TapeLabel { text: "STATUS", x: 1798.0, y: 132.0, size: 13.0 },
-        TapeLabel { text: "HALL EFFECT SWITCHES  /  VELOCITY MEMORY", x: 751.0, y: 313.0, size: 11.0 },
-        TapeLabel { text: "TRI", x: 1314.0, y: 313.0, size: 17.0 },
-        TapeLabel { text: "SQR", x: 1390.0, y: 313.0, size: 17.0 },
-        TapeLabel { text: "SAW", x: 1466.0, y: 313.0, size: 17.0 },
-        TapeLabel { text: "SIN", x: 1314.0, y: 542.0, size: 17.0 },
-        TapeLabel { text: "PULSE", x: 1390.0, y: 542.0, size: 13.0 },
-        TapeLabel { text: "NOISE", x: 1466.0, y: 542.0, size: 13.0 },
-        TapeLabel { text: "WICKI–HAYDEN  NOTE  LAYOUT", x: 715.0, y: 774.0, size: 18.0 },
-        TapeLabel { text: "MIDI\nPITCH\nDOWN", x: 1320.0, y: 770.0, size: 11.0 },
-        TapeLabel { text: "MIDI\nPITCH\nUP", x: 1454.0, y: 770.0, size: 11.0 },
-        TapeLabel { text: "DRUMS", x: 1690.0, y: 770.0, size: 20.0 },
+        TapeLabel {
+            text: "BITCRUSH",
+            x: 151.0,
+            y: 132.0,
+            size: 15.0,
+        },
+        TapeLabel {
+            text: "VOL",
+            x: 300.0,
+            y: 132.0,
+            size: 15.0,
+        },
+        TapeLabel {
+            text: "CUTOFF",
+            x: 381.0,
+            y: 132.0,
+            size: 13.0,
+        },
+        TapeLabel {
+            text: "ATTACK",
+            x: 462.0,
+            y: 132.0,
+            size: 13.0,
+        },
+        TapeLabel {
+            text: "RELEASE",
+            x: 543.0,
+            y: 132.0,
+            size: 12.0,
+        },
+        TapeLabel {
+            text: "DECAY",
+            x: 650.0,
+            y: 132.0,
+            size: 13.0,
+        },
+        TapeLabel {
+            text: "SUSTAIN",
+            x: 727.0,
+            y: 132.0,
+            size: 12.0,
+        },
+        TapeLabel {
+            text: "DRUM\nVOL",
+            x: 804.0,
+            y: 132.0,
+            size: 11.0,
+        },
+        TapeLabel {
+            text: "PAN",
+            x: 881.0,
+            y: 132.0,
+            size: 14.0,
+        },
+        TapeLabel {
+            text: "VIB RATE",
+            x: 986.0,
+            y: 132.0,
+            size: 11.0,
+        },
+        TapeLabel {
+            text: "VIB DEPTH",
+            x: 1063.0,
+            y: 132.0,
+            size: 10.5,
+        },
+        TapeLabel {
+            text: "TREMOLO",
+            x: 1141.0,
+            y: 132.0,
+            size: 11.0,
+        },
+        TapeLabel {
+            text: "GLIDE",
+            x: 1218.0,
+            y: 132.0,
+            size: 13.0,
+        },
+        TapeLabel {
+            text: "MIDI\nSEND",
+            x: 1594.0,
+            y: 132.0,
+            size: 13.0,
+        },
+        TapeLabel {
+            text: "MIDI\nRECV",
+            x: 1695.0,
+            y: 132.0,
+            size: 13.0,
+        },
+        TapeLabel {
+            text: "STATUS",
+            x: 1798.0,
+            y: 132.0,
+            size: 13.0,
+        },
+        TapeLabel {
+            text: "HALL EFFECT SWITCHES  /  VELOCITY MEMORY",
+            x: 751.0,
+            y: 313.0,
+            size: 11.0,
+        },
+        TapeLabel {
+            text: "TRI",
+            x: 1314.0,
+            y: 313.0,
+            size: 17.0,
+        },
+        TapeLabel {
+            text: "SQR",
+            x: 1390.0,
+            y: 313.0,
+            size: 17.0,
+        },
+        TapeLabel {
+            text: "SAW",
+            x: 1466.0,
+            y: 313.0,
+            size: 17.0,
+        },
+        TapeLabel {
+            text: "SIN",
+            x: 1314.0,
+            y: 542.0,
+            size: 17.0,
+        },
+        TapeLabel {
+            text: "PULSE",
+            x: 1390.0,
+            y: 542.0,
+            size: 13.0,
+        },
+        TapeLabel {
+            text: "NOISE",
+            x: 1466.0,
+            y: 542.0,
+            size: 13.0,
+        },
+        TapeLabel {
+            text: "WICKI–HAYDEN  NOTE  LAYOUT",
+            x: 715.0,
+            y: 774.0,
+            size: 18.0,
+        },
+        TapeLabel {
+            text: "MIDI\nPITCH\nDOWN",
+            x: 1320.0,
+            y: 770.0,
+            size: 11.0,
+        },
+        TapeLabel {
+            text: "MIDI\nPITCH\nUP",
+            x: 1454.0,
+            y: 770.0,
+            size: 11.0,
+        },
+        TapeLabel {
+            text: "DRUMS",
+            x: 1690.0,
+            y: 770.0,
+            size: 20.0,
+        },
     ];
 
     for label in labels {
-        let point = Point::new(
-            board.x + label.x * scale,
-            board.y + label.y * scale,
-        );
+        let point = Point::new(board.x + label.x * scale, board.y + label.y * scale);
         frame.fill_text(Text {
             content: label.text.to_string(),
             position: point,
@@ -897,17 +1049,17 @@ fn contained_rect(target: Rectangle, source_width: f32, source_height: f32) -> R
     }
 }
 
-fn draw_board_base(
-    frame: &mut Frame,
-    photo_assets: &PhotoBoardAssets,
-    compact_crop: bool,
-) {
+fn draw_board_base(frame: &mut Frame, photo_assets: &PhotoBoardAssets, compact_crop: bool) {
     let size = frame.size();
     let board = board_rect(size, compact_crop);
 
     frame.fill(&Path::rectangle(Point::ORIGIN, size), rgb(0x09, 0x0D, 0x0E));
     let shadow = rounded_rect(
-        Rectangle { x: board.x + 3.0, y: board.y + 7.0, ..board },
+        Rectangle {
+            x: board.x + 3.0,
+            y: board.y + 7.0,
+            ..board
+        },
         14.0,
     );
     frame.fill(&shadow, Color::from_rgba8(0, 0, 0, 0.62));
@@ -992,7 +1144,9 @@ fn draw_board_overlay(
 
     for key in keys {
         let rect = key_rect_with_size(key, size, compact_crop);
-        let lit_track = overlay_highlighted.and_then(|overlay| overlay.get(&key.id)).copied()
+        let lit_track = overlay_highlighted
+            .and_then(|overlay| overlay.get(&key.id))
+            .copied()
             .or_else(|| highlighted.get(&key.id).copied())
             .or_else(|| {
                 (selected_controls.contains(&key.id) || pressed.contains(&key.id))
@@ -1000,11 +1154,13 @@ fn draw_board_overlay(
             });
 
         if key.is_knob {
-            let value = key.knob_index
+            let value = key
+                .knob_index
                 .and_then(|idx| knob_values.get(idx as usize))
                 .copied()
                 .unwrap_or(0.0);
-            let label = key.knob_index
+            let label = key
+                .knob_index
                 .and_then(|idx| crate::synth::KNOB_PARAMS.get(idx as usize))
                 .map(|param| param.label);
             draw_knob(frame, rect, value, label);
@@ -1020,11 +1176,15 @@ fn draw_board_overlay(
         if let Some(sprite) = photo_assets.key_sprite(key, lit_track) {
             frame.draw_image(sprite_rect, &sprite);
         }
-        let visual_rect = Rectangle { y: rect.y + press_offset, ..rect };
+        let visual_rect = Rectangle {
+            y: rect.y + press_offset,
+            ..rect
+        };
 
         let drum_note = show_drum_symbols
             .then(|| {
-                drum_note_to_key.iter()
+                drum_note_to_key
+                    .iter()
                     .find_map(|(&note, &id)| (id == key.id).then_some(note))
             })
             .flatten();
@@ -1047,12 +1207,15 @@ fn draw_board_overlay(
         let (primary_label, secondary_label) = match key.cluster {
             Cluster::Alpha | Cluster::AlphaLight => (
                 projected_label.map(String::as_str).unwrap_or(key.label),
-                if projected_label.is_some() { Some(key.label) } else { None },
+                if projected_label.is_some() {
+                    Some(key.label)
+                } else {
+                    None
+                },
             ),
-            Cluster::Nav | Cluster::Arrow => (
-                projected_label.map(String::as_str).unwrap_or(""),
-                None,
-            ),
+            Cluster::Nav | Cluster::Arrow => {
+                (projected_label.map(String::as_str).unwrap_or(""), None)
+            }
             // The numpad's computer-key labels only ever add information as
             // the small corner hint drawn by `draw_drum_symbol` above, once
             // drum symbols replace its photographed digits. Outside that
@@ -1093,39 +1256,48 @@ fn draw_board_overlay(
             };
 
         if !primary_label.is_empty() {
-            fill_text_with_bounds(frame, Text {
-                content: primary_label.to_string(),
-                position: Point::new(
-                    label_anchor.x,
-                    label_anchor.y
-                        - if secondary_label.is_some() { 6.0 * board_scale } else { 0.0 },
-                ),
-                color: text_color,
-                size: iced::Pixels(
-                    ((if primary_label.len() > 4 { 11.0 } else { 14.0 }) * board_scale)
-                        .clamp(5.0, 14.0),
-                ),
-                font: CANVAS_FONT,
-                align_x: Horizontal::Center.into(),
-                align_y: Vertical::Center,
-                ..Text::default()
-            }, label_bounds);
+            fill_text_with_bounds(
+                frame,
+                Text {
+                    content: primary_label.to_string(),
+                    position: Point::new(
+                        label_anchor.x,
+                        label_anchor.y
+                            - if secondary_label.is_some() {
+                                6.0 * board_scale
+                            } else {
+                                0.0
+                            },
+                    ),
+                    color: text_color,
+                    size: iced::Pixels(
+                        ((if primary_label.len() > 4 { 11.0 } else { 14.0 }) * board_scale)
+                            .clamp(5.0, 14.0),
+                    ),
+                    font: CANVAS_FONT,
+                    align_x: Horizontal::Center.into(),
+                    align_y: Vertical::Center,
+                    ..Text::default()
+                },
+                label_bounds,
+            );
         }
 
         if let Some(sub) = secondary_label {
-            fill_text_with_bounds(frame, Text {
-                content: sub.to_string(),
-                position: Point::new(
-                    label_anchor.x,
-                    label_anchor.y + 12.0 * board_scale,
-                ),
-                color: Color::from_rgba8(0, 0, 0, 0.6),
-                size: iced::Pixels((10.0 * board_scale).clamp(4.0, 10.0)),
-                font: CANVAS_FONT,
-                align_x: Horizontal::Center.into(),
-                align_y: Vertical::Center,
-                ..Text::default()
-            }, label_bounds);
+            fill_text_with_bounds(
+                frame,
+                Text {
+                    content: sub.to_string(),
+                    position: Point::new(label_anchor.x, label_anchor.y + 12.0 * board_scale),
+                    color: Color::from_rgba8(0, 0, 0, 0.6),
+                    size: iced::Pixels((10.0 * board_scale).clamp(4.0, 10.0)),
+                    font: CANVAS_FONT,
+                    align_x: Horizontal::Center.into(),
+                    align_y: Vertical::Center,
+                    ..Text::default()
+                },
+                label_bounds,
+            );
         }
 
         if let Some(steps) = play_order.and_then(|order| order.get(&key.id)) {
@@ -1163,13 +1335,20 @@ fn drum_pad_name(note: u8) -> Option<&'static str> {
 fn icon_line(frame: &mut Frame, from: Point, to: Point, color: Color, width: f32) {
     frame.stroke(
         &Path::line(from, to),
-        canvas::Stroke::default().with_color(color).with_width(width),
+        canvas::Stroke::default()
+            .with_color(color)
+            .with_width(width),
     );
 }
 
 fn draw_drum_body(frame: &mut Frame, center: Point, color: Color, floor_legs: bool) {
     let body = rounded_rect(
-        Rectangle { x: center.x - 9.0, y: center.y - 6.0, width: 18.0, height: 12.0 },
+        Rectangle {
+            x: center.x - 9.0,
+            y: center.y - 6.0,
+            width: 18.0,
+            height: 12.0,
+        },
         3.0,
     );
     frame.stroke(
@@ -1184,19 +1363,61 @@ fn draw_drum_body(frame: &mut Frame, center: Point, color: Color, floor_legs: bo
         1.2,
     );
     if floor_legs {
-        icon_line(frame, Point::new(center.x - 6.0, center.y + 6.0), Point::new(center.x - 8.0, center.y + 10.0), color, 1.5);
-        icon_line(frame, Point::new(center.x + 6.0, center.y + 6.0), Point::new(center.x + 8.0, center.y + 10.0), color, 1.5);
+        icon_line(
+            frame,
+            Point::new(center.x - 6.0, center.y + 6.0),
+            Point::new(center.x - 8.0, center.y + 10.0),
+            color,
+            1.5,
+        );
+        icon_line(
+            frame,
+            Point::new(center.x + 6.0, center.y + 6.0),
+            Point::new(center.x + 8.0, center.y + 10.0),
+            color,
+            1.5,
+        );
     }
 }
 
 fn draw_hi_hat(frame: &mut Frame, center: Point, color: Color, open: bool, pedal: bool) {
     let spread = if open { 3.5 } else { 1.5 };
-    icon_line(frame, Point::new(center.x - 9.0, center.y - spread), Point::new(center.x + 9.0, center.y - spread), color, 1.7);
-    icon_line(frame, Point::new(center.x - 9.0, center.y + spread), Point::new(center.x + 9.0, center.y + spread), color, 1.7);
-    icon_line(frame, Point::new(center.x, center.y + spread), Point::new(center.x, center.y + 10.0), color, 1.4);
-    icon_line(frame, Point::new(center.x - 6.0, center.y + 10.0), Point::new(center.x + 6.0, center.y + 10.0), color, 1.4);
+    icon_line(
+        frame,
+        Point::new(center.x - 9.0, center.y - spread),
+        Point::new(center.x + 9.0, center.y - spread),
+        color,
+        1.7,
+    );
+    icon_line(
+        frame,
+        Point::new(center.x - 9.0, center.y + spread),
+        Point::new(center.x + 9.0, center.y + spread),
+        color,
+        1.7,
+    );
+    icon_line(
+        frame,
+        Point::new(center.x, center.y + spread),
+        Point::new(center.x, center.y + 10.0),
+        color,
+        1.4,
+    );
+    icon_line(
+        frame,
+        Point::new(center.x - 6.0, center.y + 10.0),
+        Point::new(center.x + 6.0, center.y + 10.0),
+        color,
+        1.4,
+    );
     if pedal {
-        icon_line(frame, Point::new(center.x, center.y + 7.0), Point::new(center.x + 8.0, center.y + 10.0), color, 1.5);
+        icon_line(
+            frame,
+            Point::new(center.x, center.y + 7.0),
+            Point::new(center.x + 8.0, center.y + 10.0),
+            color,
+            1.5,
+        );
     }
 }
 
@@ -1213,9 +1434,24 @@ fn draw_cymbal(frame: &mut Frame, center: Point, color: Color, small: bool) {
         &cymbal,
         canvas::Stroke::default().with_color(color).with_width(1.8),
     );
-    frame.fill(&Path::circle(Point::new(center.x, center.y - 2.0), 2.0), color);
-    icon_line(frame, Point::new(center.x, center.y), Point::new(center.x, center.y + 10.0), color, 1.4);
-    icon_line(frame, Point::new(center.x - 5.0, center.y + 10.0), Point::new(center.x + 5.0, center.y + 10.0), color, 1.4);
+    frame.fill(
+        &Path::circle(Point::new(center.x, center.y - 2.0), 2.0),
+        color,
+    );
+    icon_line(
+        frame,
+        Point::new(center.x, center.y),
+        Point::new(center.x, center.y + 10.0),
+        color,
+        1.4,
+    );
+    icon_line(
+        frame,
+        Point::new(center.x - 5.0, center.y + 10.0),
+        Point::new(center.x + 5.0, center.y + 10.0),
+        color,
+        1.4,
+    );
 }
 
 /// Draw a small pictogram plus a compact GM instrument name. The text keeps
@@ -1228,7 +1464,9 @@ fn draw_drum_symbol(
     color: Color,
     computer_key: Option<&str>,
 ) {
-    let Some(name) = drum_pad_name(note) else { return };
+    let Some(name) = drum_pad_name(note) else {
+        return;
+    };
     // The numpad row's real photographed key face only fills roughly the
     // bottom 80% of its cell (the top is the switch-well shadow), so a fixed
     // pixel offset from the cell top can land in that shadow instead of on
@@ -1240,16 +1478,49 @@ fn draw_drum_symbol(
     match note {
         36 => {
             let drum = Path::circle(center, 9.0);
-            frame.stroke(&drum, canvas::Stroke::default().with_color(color).with_width(1.8));
+            frame.stroke(
+                &drum,
+                canvas::Stroke::default().with_color(color).with_width(1.8),
+            );
             frame.fill(&Path::circle(center, 2.2), color);
-            icon_line(frame, Point::new(center.x - 6.0, center.y + 7.0), Point::new(center.x - 9.0, center.y + 11.0), color, 1.4);
-            icon_line(frame, Point::new(center.x + 6.0, center.y + 7.0), Point::new(center.x + 9.0, center.y + 11.0), color, 1.4);
+            icon_line(
+                frame,
+                Point::new(center.x - 6.0, center.y + 7.0),
+                Point::new(center.x - 9.0, center.y + 11.0),
+                color,
+                1.4,
+            );
+            icon_line(
+                frame,
+                Point::new(center.x + 6.0, center.y + 7.0),
+                Point::new(center.x + 9.0, center.y + 11.0),
+                color,
+                1.4,
+            );
         }
         37 => {
-            icon_line(frame, Point::new(center.x - 8.0, center.y + 8.0), Point::new(center.x + 8.0, center.y - 8.0), color, 2.2);
-            icon_line(frame, Point::new(center.x - 8.0, center.y - 8.0), Point::new(center.x + 8.0, center.y + 8.0), color, 2.2);
-            frame.fill(&Path::circle(Point::new(center.x - 8.0, center.y + 8.0), 1.8), color);
-            frame.fill(&Path::circle(Point::new(center.x + 8.0, center.y + 8.0), 1.8), color);
+            icon_line(
+                frame,
+                Point::new(center.x - 8.0, center.y + 8.0),
+                Point::new(center.x + 8.0, center.y - 8.0),
+                color,
+                2.2,
+            );
+            icon_line(
+                frame,
+                Point::new(center.x - 8.0, center.y - 8.0),
+                Point::new(center.x + 8.0, center.y + 8.0),
+                color,
+                2.2,
+            );
+            frame.fill(
+                &Path::circle(Point::new(center.x - 8.0, center.y + 8.0), 1.8),
+                color,
+            );
+            frame.fill(
+                &Path::circle(Point::new(center.x + 8.0, center.y + 8.0), 1.8),
+                color,
+            );
         }
         38 | 40 => {
             draw_drum_body(frame, center, color, false);
@@ -1260,22 +1531,43 @@ fn draw_drum_symbol(
                     b.line_to(Point::new(center.x + 2.0, center.y - 1.0));
                     b.line_to(Point::new(center.x - 1.0, center.y + 7.0));
                 });
-                frame.stroke(&bolt, canvas::Stroke::default().with_color(color).with_width(1.4));
+                frame.stroke(
+                    &bolt,
+                    canvas::Stroke::default().with_color(color).with_width(1.4),
+                );
             }
         }
         39 => {
             let hand = rounded_rect(
-                Rectangle { x: center.x - 6.0, y: center.y - 1.0, width: 12.0, height: 10.0 },
+                Rectangle {
+                    x: center.x - 6.0,
+                    y: center.y - 1.0,
+                    width: 12.0,
+                    height: 10.0,
+                },
                 3.0,
             );
-            frame.stroke(&hand, canvas::Stroke::default().with_color(color).with_width(1.5));
+            frame.stroke(
+                &hand,
+                canvas::Stroke::default().with_color(color).with_width(1.5),
+            );
             for offset in [-6.0, -2.0, 2.0, 6.0] {
-                icon_line(frame, Point::new(center.x + offset, center.y - 1.0), Point::new(center.x + offset, center.y - 9.0 + offset.abs() * 0.25), color, 1.5);
+                icon_line(
+                    frame,
+                    Point::new(center.x + offset, center.y - 1.0),
+                    Point::new(center.x + offset, center.y - 9.0 + offset.abs() * 0.25),
+                    color,
+                    1.5,
+                );
             }
         }
         41 | 43 => {
             draw_drum_body(frame, center, color, true);
-            let dot_y = if note == 41 { center.y + 2.0 } else { center.y - 4.0 };
+            let dot_y = if note == 41 {
+                center.y + 2.0
+            } else {
+                center.y - 4.0
+            };
             frame.fill(&Path::circle(Point::new(center.x, dot_y), 1.8), color);
         }
         42 => draw_hi_hat(frame, center, color, false, false),
@@ -1294,40 +1586,89 @@ fn draw_drum_symbol(
         49 => {
             draw_cymbal(frame, center, color, false);
             for (dx, dy) in [(-12.0, -5.0), (12.0, -5.0), (0.0, -11.0)] {
-                icon_line(frame, Point::new(center.x + dx * 0.72, center.y + dy * 0.72), Point::new(center.x + dx, center.y + dy), color, 1.2);
+                icon_line(
+                    frame,
+                    Point::new(center.x + dx * 0.72, center.y + dy * 0.72),
+                    Point::new(center.x + dx, center.y + dy),
+                    color,
+                    1.2,
+                );
             }
         }
         51 => draw_cymbal(frame, center, color, false),
         52 => {
             let china = Path::new(|b| {
                 b.move_to(Point::new(center.x - 11.0, center.y - 3.0));
-                b.quadratic_curve_to(Point::new(center.x, center.y + 5.0), Point::new(center.x + 11.0, center.y - 3.0));
+                b.quadratic_curve_to(
+                    Point::new(center.x, center.y + 5.0),
+                    Point::new(center.x + 11.0, center.y - 3.0),
+                );
             });
-            frame.stroke(&china, canvas::Stroke::default().with_color(color).with_width(1.8));
+            frame.stroke(
+                &china,
+                canvas::Stroke::default().with_color(color).with_width(1.8),
+            );
             frame.fill(&Path::circle(Point::new(center.x, center.y), 2.0), color);
-            icon_line(frame, Point::new(center.x, center.y + 1.0), Point::new(center.x, center.y + 10.0), color, 1.4);
+            icon_line(
+                frame,
+                Point::new(center.x, center.y + 1.0),
+                Point::new(center.x, center.y + 10.0),
+                color,
+                1.4,
+            );
         }
         53 => {
             let bell = Path::new(|b| {
                 b.move_to(Point::new(center.x - 8.0, center.y + 6.0));
-                b.quadratic_curve_to(Point::new(center.x - 5.0, center.y - 7.0), Point::new(center.x, center.y - 8.0));
-                b.quadratic_curve_to(Point::new(center.x + 5.0, center.y - 7.0), Point::new(center.x + 8.0, center.y + 6.0));
+                b.quadratic_curve_to(
+                    Point::new(center.x - 5.0, center.y - 7.0),
+                    Point::new(center.x, center.y - 8.0),
+                );
+                b.quadratic_curve_to(
+                    Point::new(center.x + 5.0, center.y - 7.0),
+                    Point::new(center.x + 8.0, center.y + 6.0),
+                );
                 b.line_to(Point::new(center.x - 8.0, center.y + 6.0));
             });
-            frame.stroke(&bell, canvas::Stroke::default().with_color(color).with_width(1.7));
-            frame.fill(&Path::circle(Point::new(center.x, center.y + 8.0), 2.0), color);
+            frame.stroke(
+                &bell,
+                canvas::Stroke::default().with_color(color).with_width(1.7),
+            );
+            frame.fill(
+                &Path::circle(Point::new(center.x, center.y + 8.0), 2.0),
+                color,
+            );
         }
         54 => {
             let ring = Path::circle(center, 8.0);
-            frame.stroke(&ring, canvas::Stroke::default().with_color(color).with_width(1.8));
-            for (dx, dy) in [(0.0, -10.0), (9.0, -4.0), (9.0, 4.0), (0.0, 10.0), (-9.0, 4.0), (-9.0, -4.0)] {
-                frame.fill(&Path::circle(Point::new(center.x + dx, center.y + dy), 1.7), color);
+            frame.stroke(
+                &ring,
+                canvas::Stroke::default().with_color(color).with_width(1.8),
+            );
+            for (dx, dy) in [
+                (0.0, -10.0),
+                (9.0, -4.0),
+                (9.0, 4.0),
+                (0.0, 10.0),
+                (-9.0, 4.0),
+                (-9.0, -4.0),
+            ] {
+                frame.fill(
+                    &Path::circle(Point::new(center.x + dx, center.y + dy), 1.7),
+                    color,
+                );
             }
         }
         55 => {
             draw_cymbal(frame, center, color, true);
             for (dx, dy) in [(-9.0, -7.0), (0.0, -11.0), (9.0, -7.0)] {
-                icon_line(frame, Point::new(center.x + dx * 0.7, center.y + dy * 0.7), Point::new(center.x + dx, center.y + dy), color, 1.2);
+                icon_line(
+                    frame,
+                    Point::new(center.x + dx * 0.7, center.y + dy * 0.7),
+                    Point::new(center.x + dx, center.y + dy),
+                    color,
+                    1.2,
+                );
             }
         }
         _ => {}
@@ -1361,7 +1702,9 @@ fn draw_drum_symbol(
 /// corner. A repeated key reads e.g. "2·5"; simultaneous chord keys all show
 /// the same number.
 fn draw_play_order_badge(frame: &mut Frame, key_rect: Rectangle, steps: &[usize]) {
-    if steps.is_empty() { return; }
+    if steps.is_empty() {
+        return;
+    }
 
     let label = steps
         .iter()
@@ -1440,7 +1783,9 @@ fn draw_knob_slider(frame: &mut Frame, knob_rect: Rectangle, value: f32, readout
     frame.fill(&panel, Color::from_rgba8(0x20, 0x1E, 0x2A, 0.97));
     frame.stroke(
         &panel,
-        canvas::Stroke::default().with_color(rgb(0x75, 0x6B, 0x4E)).with_width(1.0),
+        canvas::Stroke::default()
+            .with_color(rgb(0x75, 0x6B, 0x4E))
+            .with_width(1.0),
     );
 
     if let Some(readout) = readout {
@@ -1457,21 +1802,36 @@ fn draw_knob_slider(frame: &mut Frame, knob_rect: Rectangle, value: f32, readout
     }
 
     let track = rounded_rect(
-        Rectangle { x: center_x - 3.0, y: top, width: 6.0, height: bottom - top },
+        Rectangle {
+            x: center_x - 3.0,
+            y: top,
+            width: 6.0,
+            height: bottom - top,
+        },
         3.0,
     );
     frame.fill(&track, rgb(0x25, 0x27, 0x1D));
 
     let handle_y = top + (1.0 - value) * (bottom - top);
     let filled = rounded_rect(
-        Rectangle { x: center_x - 3.0, y: handle_y, width: 6.0, height: bottom - handle_y },
+        Rectangle {
+            x: center_x - 3.0,
+            y: handle_y,
+            width: 6.0,
+            height: bottom - handle_y,
+        },
         3.0,
     );
     frame.fill(&filled, rgb(0xFF, 0x76, 0x7B));
 
     let handle = Path::circle(Point::new(center_x, handle_y), 8.0);
     frame.fill(&handle, rgb(0xFF, 0x76, 0x7B));
-    frame.stroke(&handle, canvas::Stroke::default().with_color(Color::WHITE).with_width(1.5));
+    frame.stroke(
+        &handle,
+        canvas::Stroke::default()
+            .with_color(Color::WHITE)
+            .with_width(1.5),
+    );
 }
 
 fn rounded_rect(rect: Rectangle, radius: f32) -> Path {
@@ -1497,7 +1857,9 @@ fn draw_knob(frame: &mut Frame, rect: Rectangle, value: f32, label: Option<&str>
     frame.fill(&base, rgb(0x13, 0x12, 0x1C));
     frame.stroke(
         &base,
-        canvas::Stroke::default().with_color(rgb(0x6A, 0x60, 0x48)).with_width(1.0),
+        canvas::Stroke::default()
+            .with_color(rgb(0x6A, 0x60, 0x48))
+            .with_width(1.0),
     );
 
     let knurl = Path::circle(center, radius * 0.55);
@@ -1516,7 +1878,9 @@ fn draw_knob(frame: &mut Frame, rect: Rectangle, value: f32, label: Option<&str>
     });
     frame.stroke(
         &pointer,
-        canvas::Stroke::default().with_color(rgb(0xFF, 0x76, 0x7B)).with_width(2.5),
+        canvas::Stroke::default()
+            .with_color(rgb(0xFF, 0x76, 0x7B))
+            .with_width(2.5),
     );
     frame.fill(&Path::circle(tip, 2.5), rgb(0xFF, 0x76, 0x7B));
 
@@ -1553,7 +1917,8 @@ mod tests {
 
     #[test]
     fn annotated_middle_keys_recolor_their_left_bevel() {
-        for key_id in [32, 46] {
+        // One non-edge light key from each of the five alpha rows.
+        for key_id in [17, 32, 46, 61, 74] {
             let resting = image::load_from_memory(
                 preprocessed_key_sprite(key_id, 0).expect("resting sprite must exist"),
             )
@@ -1589,7 +1954,10 @@ mod tests {
                 }
             }
 
-            assert!(material_pixels > 20, "key {key_id} needs sampled bevel material");
+            assert!(
+                material_pixels > 20,
+                "key {key_id} needs sampled bevel material"
+            );
             assert!(
                 changed_material * 4 > material_pixels * 3,
                 "key {key_id} left an unrecolored strip on its annotated bevel"

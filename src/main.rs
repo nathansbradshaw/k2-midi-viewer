@@ -16,15 +16,15 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use iced::widget::canvas::Canvas;
+use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path};
 use iced::widget::image::{self, FilterMethod};
 use iced::widget::{
-    button, column, container, image as image_widget, pick_list, row, scrollable, slider, stack,
-    text,
+    Stack, button, column, container, image as image_widget, pick_list, row, scrollable, slider,
+    text, tooltip,
 };
 use iced::{
-    Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Shadow, Size,
-    Subscription, Task, Theme, Vector,
+    Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Point, Rectangle,
+    Renderer, Shadow, Size, Subscription, Task, Theme, Vector, mouse,
 };
 
 use key::{Cluster, Key, KeyId};
@@ -59,12 +59,12 @@ impl ChromeAssets {
 // electronic gear — molded dark control panels, an amber LCD readout, and
 // the salmon accent carried over from the board's own arrow cluster.
 const APP_BG: Color = Color::from_rgb8(0x09, 0x0a, 0x08);
-// Three panel shades from darkest to lightest, used to give header/transport/
-// mixer strips a little depth against each other and the app-shell background
-// even though none of them carry the literal grain texture (see ChromeAssets).
-const PANEL_BG_DARK: Color = Color::from_rgb8(0x11, 0x12, 0x0f);
-const PANEL_BG: Color = Color::from_rgb8(0x15, 0x16, 0x12);
-const PANEL_BG_LIGHT: Color = Color::from_rgb8(0x19, 0x1a, 0x16);
+// Three panel shades from darkest to lightest — charcoal rather than
+// near-black, so the dark-grain texture layered over them (see
+// `textured_panel`) actually reads at close range instead of looking flat.
+const PANEL_BG_DARK: Color = Color::from_rgb8(0x16, 0x17, 0x13);
+const PANEL_BG: Color = Color::from_rgb8(0x1c, 0x1d, 0x17);
+const PANEL_BG_LIGHT: Color = Color::from_rgb8(0x22, 0x23, 0x1b);
 const PANEL_BORDER: Color = Color::from_rgb8(0x3a, 0x39, 0x2e);
 const TEXT_MAIN: Color = Color::from_rgb8(0xde, 0xd7, 0xc4);
 const TEXT_MUTED: Color = Color::from_rgb8(0x91, 0x8c, 0x7d);
@@ -73,6 +73,12 @@ const ACCENT: Color = Color::from_rgb(0.830, 0.405, 0.330);
 const LCD_BG: Color = Color::from_rgb8(0x07, 0x08, 0x04);
 const LCD_TEXT: Color = Color::from_rgb8(0xe9, 0x9b, 0x24);
 const LCD_BORDER: Color = Color::from_rgb8(0x2a, 0x22, 0x10);
+// A narrow dark bezel around the keyboard and staff stages — intentional
+// framing so each reads as mounted hardware, not an image viewer. Shared and
+// kept tight so it doesn't reopen the empty-space problem the sizing math
+// (see `width_limited` in `view()`) already accounts for.
+const CHROME_BEZEL: f32 = 5.0;
+const BEZEL_BG: Color = Color::from_rgb8(0x08, 0x09, 0x07);
 
 fn app_theme() -> Theme {
     Theme::custom(
@@ -102,13 +108,130 @@ fn app_icon() -> iced::window::Icon {
     .expect("the embedded K2 app icon must be 256x256 RGBA")
 }
 
-/// Shared molded-panel look for a hardware strip, parameterized on the panel
-/// shade — [`header_panel_style`]/[`panel_style`]/[`mixer_panel_style`] each
-/// pick one of the three panel tones so header/transport/mixer read as
-/// slightly different depths of the same equipment surface.
-fn panel_style_base(bg: Color) -> container::Style {
+/// Wraps `content` as a distinct hardware module: a solid charcoal base +
+/// low-opacity dark-grain texture sit *under* it, and thin top-highlight /
+/// bottom-shadow hairlines sit *inside* it at the very top and bottom edge.
+///
+/// `content`'s own (padded, `Shrink`) size drives the whole stack's size —
+/// via [`iced::widget::Stack::push`] first, so it becomes the base layer —
+/// so the texture/color layers underneath exactly fill that box via
+/// [`iced::widget::Stack::push_under`] instead of risking a `Length::Fill`
+/// child inflating the surrounding layout.
+fn textured_panel<'a>(
+    content: impl Into<Element<'a, Message>>,
+    bg: Color,
+    dark_grain: image::Handle,
+) -> Element<'a, Message> {
+    let hairline = |color: Color| {
+        container(text(""))
+            .width(Length::Fill)
+            .height(1)
+            .style(move |_: &Theme| container::Style {
+                background: Some(Background::Color(color)),
+                ..Default::default()
+            })
+    };
+    let framed = column![
+        hairline(Color::from_rgba(1.0, 1.0, 1.0, 0.06)),
+        content.into(),
+        hairline(Color::from_rgba(0.0, 0.0, 0.0, 0.35)),
+    ]
+    .spacing(0);
+
+    let color_base = container(text(""))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(Background::Color(bg)),
+            border: Border {
+                color: PANEL_BORDER,
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.28),
+                offset: Vector::new(0.0, 3.0),
+                blur_radius: 0.0,
+            },
+            ..Default::default()
+        });
+    let grain = image_widget(dark_grain)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .content_fit(ContentFit::Cover)
+        .opacity(0.10f32);
+
+    Stack::new()
+        .push(framed)
+        .push_under(grain)
+        .push_under(color_base)
+        .into()
+}
+
+/// A subtle recessed chip grouping a logical cluster of controls (e.g. the
+/// header's pitch/view/board toggles) so a row of buttons reads as distinct
+/// clusters instead of one continuous toolbar.
+fn control_cluster<'a>(
+    content: impl Into<Element<'a, Message>>,
+    compact: bool,
+) -> Element<'a, Message> {
+    let padding = if compact {
+        Padding::from([2.0, 6.0])
+    } else {
+        Padding::from([6.0, 10.0])
+    };
+    container(content)
+        .padding(padding)
+        .style(|_: &Theme| container::Style {
+            background: Some(Background::Color(PANEL_BG_DARK)),
+            border: Border {
+                color: PANEL_BORDER.scale_alpha(0.6),
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Shared narrow-bezel frame for the keyboard and staff stages — dark,
+/// bordered, no texture (kept distinct from `textured_panel`'s equipment
+/// surfaces since neither the board nor the CRT should compete with grain).
+fn bezel_style(_: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(bg)),
+        background: Some(Background::Color(BEZEL_BG)),
+        border: Border {
+            color: PANEL_BORDER,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// Deeper inset treatment for the notation display. The outer visualizer
+/// housing carries the panel grain; this inner surface stays clean and dark
+/// so the amber grid and notation remain legible.
+fn crt_screen_style(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb8(0x08, 0x09, 0x04))),
+        border: Border {
+            color: Color::from_rgb8(0x35, 0x31, 0x22),
+            width: 2.0,
+            radius: 4.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.72),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 0.0,
+        },
+        ..Default::default()
+    }
+}
+
+fn mixer_strip_style(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(PANEL_BG)),
         border: Border {
             color: PANEL_BORDER,
             width: 1.0,
@@ -116,23 +239,24 @@ fn panel_style_base(bg: Color) -> container::Style {
         },
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.28),
-            offset: Vector::new(0.0, 3.0),
+            offset: Vector::new(0.0, 2.0),
             blur_radius: 0.0,
         },
         ..Default::default()
     }
 }
 
-fn header_panel_style(_: &Theme) -> container::Style {
-    panel_style_base(PANEL_BG_LIGHT)
-}
-
-fn panel_style(_: &Theme) -> container::Style {
-    panel_style_base(PANEL_BG)
-}
-
-fn mixer_panel_style(_: &Theme) -> container::Style {
-    panel_style_base(PANEL_BG_DARK)
+fn inactive_control_style(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(PANEL_BG_DARK)),
+        border: Border {
+            color: PANEL_BORDER.scale_alpha(0.55),
+            width: 1.0,
+            radius: 2.0.into(),
+        },
+        text_color: Some(TEXT_MUTED.scale_alpha(0.6)),
+        ..Default::default()
+    }
 }
 
 /// Amber-on-black status readout — a recessed display let into the panel,
@@ -197,6 +321,37 @@ fn control_style(_: &Theme, status: button::Status) -> button::Style {
     }
 }
 
+/// A visually subordinate control — same interaction as `control_style`, but
+/// near-transparent at rest so a strip of these (the header's secondary
+/// pitch/toggle row) doesn't compete with the LCD or transport for attention.
+fn secondary_control_style(_: &Theme, status: button::Status) -> button::Style {
+    let (background, text_color, border_color) = match status {
+        button::Status::Active => (
+            Color::TRANSPARENT,
+            TEXT_MUTED,
+            PANEL_BORDER.scale_alpha(0.5),
+        ),
+        button::Status::Hovered => (PANEL_BG_DARK, TEXT_MAIN, PANEL_BORDER),
+        button::Status::Pressed => (Color::from_rgb8(0x05, 0x05, 0x04), TEXT_MAIN, ACCENT),
+        button::Status::Disabled => (
+            Color::TRANSPARENT,
+            TEXT_MUTED.scale_alpha(0.5),
+            Color::TRANSPARENT,
+        ),
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color,
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: 2.0.into(),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
 /// A 1-indexed MIDI channel number for display in a [`pick_list`] dropdown,
 /// labeled with `prefix` (e.g. "CH" or "PLAY CH") to match the control it
 /// replaces.
@@ -213,7 +368,9 @@ impl std::fmt::Display for ChannelOption {
 }
 
 fn channel_options(prefix: &'static str) -> Vec<ChannelOption> {
-    (1..=16u8).map(|channel| ChannelOption { prefix, channel }).collect()
+    (1..=16u8)
+        .map(|channel| ChannelOption { prefix, channel })
+        .collect()
 }
 
 /// A per-track octave shift for display in a [`pick_list`] dropdown, mirroring
@@ -260,10 +417,10 @@ fn channel_pick_list_style(_: &Theme, status: pick_list::Status) -> pick_list::S
 
 fn accent_style(_: &Theme, status: button::Status) -> button::Style {
     let background = match status {
-        button::Status::Hovered => Color::from_rgb(0.920, 0.480, 0.390),
-        button::Status::Pressed => Color::from_rgb(0.610, 0.280, 0.230),
-        button::Status::Disabled => Color::from_rgb(0.210, 0.150, 0.125),
-        button::Status::Active => ACCENT,
+        button::Status::Hovered => Color::from_rgb8(0xa9, 0x5d, 0x47),
+        button::Status::Pressed => Color::from_rgb8(0x66, 0x34, 0x29),
+        button::Status::Disabled => Color::from_rgb8(0x35, 0x2a, 0x23),
+        button::Status::Active => Color::from_rgb8(0x8f, 0x4c, 0x3b),
     };
     button::Style {
         background: Some(Background::Color(background)),
@@ -273,12 +430,12 @@ fn accent_style(_: &Theme, status: button::Status) -> button::Style {
             Color::WHITE
         },
         border: Border {
-            color: Color::from_rgb(1.0, 0.53, 0.45),
+            color: Color::from_rgb8(0xc1, 0x73, 0x59),
             width: 1.0,
             radius: 2.0.into(),
         },
         shadow: Shadow {
-            color: Color::from_rgba(1.0, 0.20, 0.42, 0.28),
+            color: Color::from_rgba(0.45, 0.16, 0.10, 0.36),
             offset: Vector::new(0.0, 3.0),
             blur_radius: 0.0,
         },
@@ -286,43 +443,38 @@ fn accent_style(_: &Theme, status: button::Status) -> button::Style {
     }
 }
 
-/// Chunky rectangular tape-deck buttons for Play/Pause/Stop — a heavier,
-/// more physical presence than the general-purpose `control_style`, styled
-/// after a beige/olive mechanical transport key rather than a flat web button.
+/// Chunky tape-deck keys for Play/Pause/Stop. The warm molded face, heavy dark
+/// edge, and raised/pressed shadow states stay reliable across both Iced's
+/// native and web renderers.
 fn transport_button_style(_: &Theme, status: button::Status) -> button::Style {
-    let (background, text_color) = match status {
-        button::Status::Active => (
-            Color::from_rgb8(0xb7, 0xaa, 0x8d),
-            Color::from_rgb8(0x17, 0x17, 0x14),
-        ),
-        button::Status::Hovered => (
-            Color::from_rgb8(0xc7, 0xba, 0x9c),
-            Color::from_rgb8(0x17, 0x17, 0x14),
-        ),
-        button::Status::Pressed => (
-            Color::from_rgb8(0x8f, 0x84, 0x6c),
-            Color::from_rgb8(0x17, 0x17, 0x14),
-        ),
-        button::Status::Disabled => (Color::from_rgb8(0x4a, 0x46, 0x3c), TEXT_MUTED),
+    let base = match status {
+        button::Status::Active => Color::from_rgb8(0xb7, 0xaa, 0x8d),
+        button::Status::Hovered => Color::from_rgb8(0xc7, 0xba, 0x9c),
+        button::Status::Pressed => Color::from_rgb8(0x8f, 0x84, 0x6c),
+        button::Status::Disabled => Color::from_rgb8(0x9a, 0x91, 0x7b),
     };
+    let pressed = status == button::Status::Pressed;
+    let disabled = status == button::Status::Disabled;
+
     button::Style {
-        background: Some(Background::Color(background)),
-        text_color,
+        background: Some(Background::Color(base)),
+        text_color: if disabled {
+            Color::from_rgb8(0x2d, 0x2b, 0x24)
+        } else {
+            Color::from_rgb8(0x17, 0x17, 0x14)
+        },
         border: Border {
-            color: Color::from_rgb8(0x05, 0x05, 0x05),
-            width: 1.0,
-            radius: 2.0.into(),
+            color: if pressed {
+                Color::from_rgb8(0x02, 0x02, 0x02)
+            } else {
+                Color::from_rgb8(0x05, 0x05, 0x05)
+            },
+            width: 2.0,
+            radius: 3.0.into(),
         },
         shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.6),
-            offset: Vector::new(
-                0.0,
-                if status == button::Status::Pressed {
-                    0.0
-                } else {
-                    2.0
-                },
-            ),
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.65),
+            offset: Vector::new(0.0, if pressed { 0.0 } else { 3.0 }),
             blur_radius: 0.0,
         },
         snap: false,
@@ -360,6 +512,67 @@ fn rocker_style(on: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     }
 }
 
+/// A compact two-state rocker switch. Both positions stay visible, matching a
+/// labeled hardware rocker instead of a generic toggle whose state is only
+/// communicated by color.
+fn rocker_switch(
+    caption: &'static str,
+    on: bool,
+    indicator_color: Color,
+    on_press: Option<Message>,
+) -> Element<'static, Message> {
+    let indicator = container(text(""))
+        .width(7)
+        .height(7)
+        .style(move |_: &Theme| container::Style {
+            background: Some(Background::Color(indicator_color)),
+            border: Border {
+                radius: 999.0.into(),
+                ..Default::default()
+            },
+            shadow: if on {
+                Shadow {
+                    color: indicator_color.scale_alpha(0.75),
+                    offset: Vector::new(0.0, 0.0),
+                    blur_radius: 6.0,
+                }
+            } else {
+                Shadow::default()
+            },
+            ..Default::default()
+        });
+    let off_color = if on {
+        TEXT_MUTED.scale_alpha(0.45)
+    } else {
+        TEXT_MAIN
+    };
+    let on_color = if on {
+        indicator_color
+    } else {
+        TEXT_MUTED.scale_alpha(0.45)
+    };
+    button(
+        column![
+            row![indicator, text(caption).size(9)]
+                .spacing(5)
+                .align_y(Alignment::Center),
+            row![
+                text("OFF").size(8).color(off_color),
+                text("│").size(8).color(PANEL_BORDER),
+                text("ON").size(8).color(on_color),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(2),
+    )
+    .width(Length::Fixed(72.0))
+    .padding([6, 8])
+    .style(rocker_style(on))
+    .on_press_maybe(on_press)
+    .into()
+}
+
 /// A horizontal hardware fader: a narrow dark slot with a small rectangular
 /// beige thumb, in place of a rounded web slider.
 fn fader_style(_: &Theme, _status: slider::Status) -> slider::Style {
@@ -385,6 +598,43 @@ fn fader_style(_: &Theme, _status: slider::Status) -> slider::Style {
             border_width: 1.0,
             border_color: Color::from_rgb8(0x05, 0x05, 0x05),
         },
+    }
+}
+
+/// Evenly spaced hardware-fader tick marks, drawn as a static backdrop layer
+/// behind the scrubber (see its `Stack::push_under` usage) — the slider
+/// itself stays a real, fully functional `range` input; this only adds the
+/// decorative ticks a physical fader would have alongside its slot.
+struct FaderTicks;
+
+impl canvas::Program<Message> for FaderTicks {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let width = frame.width();
+        let mid_y = frame.height() / 2.0;
+        const TICK_COUNT: usize = 11;
+        for i in 0..TICK_COUNT {
+            let x = width * (i as f32) / (TICK_COUNT - 1) as f32;
+            let tall = i == 0 || i == TICK_COUNT - 1 || i == TICK_COUNT / 2;
+            let tick_height = if tall { 10.0 } else { 6.0 };
+            frame.fill(
+                &Path::rectangle(
+                    Point::new((x - 0.5).clamp(0.0, width - 1.0), mid_y - tick_height / 2.0),
+                    Size::new(1.0, tick_height),
+                ),
+                Color::from_rgba8(0x91, 0x8c, 0x7d, 0.45),
+            );
+        }
+        vec![frame.into_geometry()]
     }
 }
 
@@ -1585,8 +1835,7 @@ impl App {
                     continue;
                 }
 
-                let shifted =
-                    self.shifted_note(note.midi_note, note.track);
+                let shifted = self.shifted_note(note.midi_note, note.track);
                 if let Some(&kid) = self.closest_key_for_note.get(&shifted) {
                     self.all_notes_cache.insert(kid, note.track);
                 }
@@ -1606,8 +1855,7 @@ impl App {
                     continue;
                 }
 
-                let shifted =
-                    self.shifted_note(note.midi_note, note.track);
+                let shifted = self.shifted_note(note.midi_note, note.track);
                 if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                     if let Some(kid) = pick_key_fixed(kids, self.key_pick_mode) {
                         self.all_notes_cache.insert(kid, note.track);
@@ -1675,8 +1923,7 @@ impl App {
                     continue;
                 }
 
-                let shifted =
-                    self.shifted_note(note.midi_note, note.track);
+                let shifted = self.shifted_note(note.midi_note, note.track);
                 if let Some(&kid) = self.closest_key_for_note.get(&shifted) {
                     self.selection_highlight_cache.insert(kid, note.track);
                     play_ticks.entry(kid).or_default().push(note.start_tick);
@@ -1699,8 +1946,7 @@ impl App {
                     continue;
                 }
 
-                let shifted =
-                    self.shifted_note(note.midi_note, note.track);
+                let shifted = self.shifted_note(note.midi_note, note.track);
                 if let Some(kids) = self.note_to_all_keys.get(&shifted) {
                     if let Some(kid) = pick_key_fixed(kids, self.key_pick_mode) {
                         self.selection_highlight_cache.insert(kid, note.track);
@@ -1783,8 +2029,11 @@ impl App {
     /// when looping is off. Called whenever looping is toggled or the
     /// selection changes, so the active loop always tracks what's selected.
     fn sync_loop_range(&self) {
-        let Some(ref h) = self.playback_handle else { return };
-        let range = self.looper_enabled
+        let Some(ref h) = self.playback_handle else {
+            return;
+        };
+        let range = self
+            .looper_enabled
             .then(|| {
                 self.staff_selection
                     .map(|(s, e)| (s, e.max(s + 1)))
@@ -2322,7 +2571,9 @@ impl App {
                                     }
                                     continue;
                                 }
-                                if let Some(kid) = self.active_highlight_keys.remove(&(note, channel)) {
+                                if let Some(kid) =
+                                    self.active_highlight_keys.remove(&(note, channel))
+                                {
                                     self.highlighted.remove(&kid);
                                 }
                             }
@@ -2544,22 +2795,46 @@ impl App {
 
     fn view(&self) -> Element<'_, Message> {
         let has_file = self.midi_file.is_some();
+        let dense_desktop = self.window_size.width >= 1180.0;
         let (outer_pad, section_gap, panel_v, panel_h, row_gap, track_gap) =
             if self.window_size.width < 1200.0 {
                 (4.0, 4.0, 5.0, 6.0, 5.0, 8.0)
             } else if self.window_size.width < 1600.0 {
-                (8.0, 6.0, 7.0, 8.0, 7.0, 10.0)
+                (4.0, 3.0, 3.0, 6.0, 4.0, 6.0)
             } else {
-                (18.0, 10.0, 10.0, 12.0, 10.0, 14.0)
+                (6.0, 4.0, 3.0, 8.0, 4.0, 8.0)
             };
+        let lcd_padding = if dense_desktop {
+            Padding::from([4.0, 16.0])
+        } else {
+            Padding::from([12.0, 18.0])
+        };
+        let deck_padding = if dense_desktop {
+            Padding::from([8.0, 18.0])
+        } else {
+            Padding::from([14.0, 22.0])
+        };
+        let mixer_strip_padding = if dense_desktop {
+            Padding::from([5.0, 8.0])
+        } else {
+            Padding::from([10.0, 12.0])
+        };
+        let mixer_panel_v = panel_v + if dense_desktop { 1.0 } else { 4.0 };
+        let resize_handle_height = if dense_desktop { 8.0 } else { 16.0 };
+        let header_toggle_padding = if dense_desktop {
+            Padding::from([5.0, 10.0])
+        } else {
+            Padding::from([8.0, 12.0])
+        };
         // Wood side rails shrink on narrower windows and disappear entirely
         // on phone-width screens rather than competing with the app for space.
+        // Narrower than the first pass — an accent, not a dominant frame.
         let rail_width: f32 = if self.window_size.width < 700.0 {
             0.0
         } else if self.window_size.width < 1200.0 {
-            12.0
+            9.0
         } else {
-            20.0
+            14.0
         };
 
         // ── Header: identity, file, metadata and pitch mapping ──────────────
@@ -2570,23 +2845,32 @@ impl App {
 
         // Amber-on-black LCD readout — discrete labeled segments rather than
         // one interpolated string, matching a real status display's fields.
+        // This is the header's main focal element, not a small status aside,
+        // so its type is sized to actually dominate the row.
         let lcd_segment = |label: &'static str, value: String| -> Element<Message> {
-            row![
-                text(label).size(9).color(Color::from_rgba8(0xe9, 0x9b, 0x24, 0.55)),
-                text(value).size(13).color(LCD_TEXT),
+            column![
+                text(label)
+                    .size(9)
+                    .color(Color::from_rgba8(0xe9, 0x9b, 0x24, 0.55)),
+                text(value).size(19).color(LCD_TEXT),
             ]
-            .spacing(4)
-            .align_y(Alignment::Center)
+            .spacing(1)
+            .align_x(Alignment::Start)
             .into()
         };
-        let midi_status = if self.audio_error.is_some() { "ERR" } else { "READY" };
+        let midi_status = if self.audio_error.is_some() {
+            "ERR"
+        } else {
+            "READY"
+        };
         let meta: Element<Message> = if let Some(ref e) = self.load_error {
             container(
                 text(format!("ERROR · {e}"))
-                    .size(13)
+                    .size(15)
                     .color(Color::from_rgb(0.98, 0.48, 0.38)),
             )
-            .padding([6, 10])
+            .padding(lcd_padding)
+            .width(Length::Fill)
             .style(lcd_style)
             .into()
         } else if let Some(ref f) = self.midi_file {
@@ -2601,35 +2885,47 @@ impl App {
             } else {
                 format!("{:+} st", self.octave_offset)
             };
-            let mut segments = vec![
+            let segments = vec![
+                lcd_segment("FILE", "LOADED".to_string()),
                 lcd_segment("BPM", format!("{bpm:.0}")),
                 lcd_segment("TIME SIG", format!("{}/{}", f.time_sig.0, f.time_sig.1)),
                 lcd_segment("DUR", format!("{mins}:{secs:02}")),
                 lcd_segment("OCT", offset_label),
                 lcd_segment("MIDI", midi_status.to_string()),
+                lcd_segment("SKIP", self.skipped_notes.to_string()),
             ];
-            if self.skipped_notes > 0 {
-                segments.push(lcd_segment("SKIP", self.skipped_notes.to_string()));
-            }
             container(
-                scrollable(row(segments).spacing(14).align_y(Alignment::Center))
-                    .direction(scrollable::Direction::Horizontal(
+                scrollable(row(segments).spacing(26).align_y(Alignment::Center)).direction(
+                    scrollable::Direction::Horizontal(
                         scrollable::Scrollbar::new().width(3).scroller_width(3),
-                    )),
+                    ),
+                ),
             )
-            .padding([6, 10])
+            .padding(lcd_padding)
+            .width(Length::Fill)
             .style(lcd_style)
             .into()
         } else {
             container(
-                row![
-                    lcd_segment("FILE", "NONE".to_string()),
-                    lcd_segment("MIDI", midi_status.to_string()),
-                ]
-                .spacing(14)
-                .align_y(Alignment::Center),
+                scrollable(
+                    row![
+                        lcd_segment("FILE", "NONE".to_string()),
+                        lcd_segment("BPM", "--".to_string()),
+                        lcd_segment("TIME SIG", "--/--".to_string()),
+                        lcd_segment("DUR", "0:00".to_string()),
+                        lcd_segment("OCT", "±0".to_string()),
+                        lcd_segment("MIDI", midi_status.to_string()),
+                        lcd_segment("SKIP", "0".to_string()),
+                    ]
+                    .spacing(26)
+                    .align_y(Alignment::Center),
+                )
+                .direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::new().width(3).scroller_width(3),
+                )),
             )
-            .padding([6, 10])
+            .padding(lcd_padding)
+            .width(Length::Fill)
             .style(lcd_style)
             .into()
         };
@@ -2640,23 +2936,23 @@ impl App {
             text("PITCH").size(10).color(TEXT_MUTED),
             button("−")
                 .padding([5, 10])
-                .style(control_style)
+                .style(secondary_control_style)
                 .on_press_maybe(has_file.then_some(Message::PitchDown)),
             button(step_label)
                 .padding([5, 10])
-                .style(control_style)
+                .style(secondary_control_style)
                 .on_press(Message::PitchStepToggle),
             button("+")
                 .padding([5, 10])
-                .style(control_style)
+                .style(secondary_control_style)
                 .on_press_maybe(has_file.then_some(Message::PitchUp)),
             button("Reset")
                 .padding([5, 10])
-                .style(control_style)
+                .style(secondary_control_style)
                 .on_press_maybe((self.octave_offset != 0).then_some(Message::PitchReset)),
             button(layout_label)
                 .padding([5, 10])
-                .style(control_style)
+                .style(secondary_control_style)
                 .on_press(Message::OctaveLayoutToggle),
         ]
         .spacing(5)
@@ -2672,7 +2968,7 @@ impl App {
             .style(if self.show_all_notes {
                 toggled_style
             } else {
-                control_style
+                secondary_control_style
             })
             .on_press_maybe(has_file.then_some(Message::ToggleAllNotes));
 
@@ -2690,7 +2986,10 @@ impl App {
 
         let live_channel_btn = pick_list(
             channel_options("PLAY CH"),
-            Some(ChannelOption { prefix: "PLAY CH", channel: self.live_channel + 1 }),
+            Some(ChannelOption {
+                prefix: "PLAY CH",
+                channel: self.live_channel + 1,
+            }),
             |opt: ChannelOption| Message::LiveChannel(opt.channel - 1),
         )
         .text_size(12)
@@ -2773,21 +3072,22 @@ impl App {
             .into()
         };
 
+        // Brand stays intrinsic width — the LCD claims the header's leftover
+        // space instead, so it reads as the row's dominant element.
         let identity = column![
             text("K2").size(24).color(TEXT_MAIN),
             text("KEYBOARD KEYBOARD / MIDI VIEWER")
                 .size(10)
                 .color(TEXT_MUTED),
         ]
-        .spacing(0)
-        .width(Length::Fill);
+        .spacing(0);
 
         #[cfg(not(target_arch = "wasm32"))]
-        let header_top = row![identity, port_btn, live_channel_btn, open_btn]
+        let midi_controls = row![port_btn, live_channel_btn, open_btn]
             .spacing(row_gap)
             .align_y(Alignment::Center);
         #[cfg(target_arch = "wasm32")]
-        let header_top = row![identity, web_midi_controls, live_channel_btn, open_btn]
+        let midi_controls = row![web_midi_controls, live_channel_btn, open_btn]
             .spacing(row_gap)
             .align_y(Alignment::Center);
 
@@ -2797,11 +3097,11 @@ impl App {
             "Computer keys: off"
         };
         let keyboard_hits_btn = button(keyboard_hits_label)
-            .padding([8, 12])
+            .padding(header_toggle_padding)
             .style(if self.keyboard_hits_enabled {
                 toggled_style
             } else {
-                control_style
+                secondary_control_style
             })
             .on_press(Message::ToggleKeyboardHits);
 
@@ -2811,11 +3111,11 @@ impl App {
             "Drum symbols: off"
         };
         let drum_symbols_btn = button(drum_symbols_label)
-            .padding([8, 12])
+            .padding(header_toggle_padding)
             .style(if self.drum_symbols_enabled {
                 toggled_style
             } else {
-                control_style
+                secondary_control_style
             })
             .on_press(Message::ToggleDrumSymbols);
 
@@ -2825,76 +3125,109 @@ impl App {
             "Compact board"
         };
         let compact_keyboard_btn = button(compact_keyboard_label)
-            .padding([8, 12])
+            .padding(header_toggle_padding)
             .style(if self.compact_keyboard {
                 toggled_style
             } else {
-                control_style
+                secondary_control_style
             })
             .on_press(Message::ToggleCompactKeyboard);
 
-        let header_bottom: Element<Message> = if self.window_size.width < 1180.0 {
+        // Main header row: brand, the big amber LCD (dominant, Fill width),
+        // then MIDI controls — visually secondary to the LCD by virtue of
+        // being ordinary-sized buttons next to a much larger display.
+        let header_main: Element<Message> = if self.window_size.width < 1180.0 {
             column![
-                row![container(meta).width(Length::Fill), pitch_controls]
-                    .spacing(row_gap)
-                    .align_y(Alignment::Center),
-                row![
-                    all_notes_btn,
-                    keyboard_hits_btn,
-                    drum_symbols_btn,
-                    compact_keyboard_btn,
-                ]
-                .spacing(row_gap)
-                .align_y(Alignment::Center),
+                identity,
+                meta,
+                scrollable(midi_controls).direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::new().width(4).scroller_width(4),
+                )),
             ]
             .spacing(row_gap)
             .into()
         } else {
-            row![
-                container(meta).width(Length::Fill),
-                pitch_controls,
-                all_notes_btn,
-                keyboard_hits_btn,
-                drum_symbols_btn,
-                compact_keyboard_btn,
+            row![identity, meta, midi_controls]
+                .spacing(row_gap * 2.0)
+                .align_y(Alignment::Center)
+                .into()
+        };
+
+        // Secondary strip: pitch mapping and view toggles, muted styling so
+        // they read as auxiliary controls under the main header row.
+        // Three logical clusters — pitch mapping, view toggles, board mode —
+        // each its own recessed chip, instead of one continuous toolbar row.
+        let pitch_cluster = control_cluster(pitch_controls, dense_desktop);
+        let view_cluster = control_cluster(
+            row![all_notes_btn, keyboard_hits_btn, drum_symbols_btn]
+                .spacing(5)
+                .align_y(Alignment::Center),
+            dense_desktop,
+        );
+        let board_cluster = control_cluster(compact_keyboard_btn, dense_desktop);
+
+        let header_secondary: Element<Message> = if self.window_size.width < 720.0 {
+            column![pitch_cluster, view_cluster, board_cluster]
+                .spacing(row_gap)
+                .into()
+        } else if self.window_size.width < 1180.0 {
+            column![
+                pitch_cluster,
+                row![view_cluster, board_cluster]
+                    .spacing(row_gap)
+                    .align_y(Alignment::Center),
             ]
             .spacing(row_gap)
-            .align_y(Alignment::Center)
             .into()
+        } else {
+            row![pitch_cluster, view_cluster, board_cluster]
+                .spacing(row_gap * 1.5)
+                .align_y(Alignment::Center)
+                .into()
         };
-        let file_row = container(column![header_top, header_bottom].spacing(row_gap))
-            .padding([panel_v, panel_h])
-            .style(header_panel_style);
+
+        let file_row = textured_panel(
+            container(column![header_main, header_secondary].spacing(row_gap))
+                .padding([panel_v, panel_h]),
+            PANEL_BG_LIGHT,
+            self.chrome_assets.dark_grain.clone(),
+        );
 
         // ── Row 2: transport ───────────────────────────────────────────────
         let play_pause_btn: Element<Message> = match self.play_state {
-            PlayState::Playing => button("Pause")
-                .padding([8, 16])
+            PlayState::Playing => button(text("PAUSE").size(15))
+                .padding(deck_padding)
                 .style(transport_button_style)
                 .on_press(Message::Pause)
                 .into(),
-            PlayState::Paused | PlayState::Stopped => button("Play")
-                .padding([8, 16])
+            PlayState::Paused | PlayState::Stopped => button(text("PLAY").size(15))
+                .padding(deck_padding)
                 .style(transport_button_style)
                 .on_press_maybe(has_file.then_some(Message::Play))
                 .into(),
         };
-        let stop_btn = button("Stop")
-            .padding([8, 16])
+        let stop_btn = button(text("STOP").size(15))
+            .padding(deck_padding)
             .style(transport_button_style)
             .on_press_maybe(
                 (has_file && self.play_state != PlayState::Stopped).then_some(Message::Stop),
             );
 
-        let looper_label = match (self.looper_enabled, self.staff_selection.is_some()) {
-            (false, _) => "LOOP",
-            (true, true) => "LOOP: SEL",
-            (true, false) => "LOOP: ON",
+        let looper_caption = if self.looper_enabled && self.staff_selection.is_some() {
+            "LOOP SEL"
+        } else {
+            "LOOP"
         };
-        let looper_btn = button(looper_label)
-            .padding([8, 14])
-            .style(rocker_style(self.looper_enabled))
-            .on_press(Message::ToggleLooper);
+        let looper_btn = rocker_switch(
+            looper_caption,
+            self.looper_enabled,
+            if self.looper_enabled {
+                ACCENT
+            } else {
+                TEXT_MUTED.scale_alpha(0.4)
+            },
+            Some(Message::ToggleLooper),
+        );
 
         let audio_label = if let Some(error) = &self.audio_error {
             #[cfg(target_arch = "wasm32")]
@@ -2928,10 +3261,38 @@ impl App {
             && self
                 .audio_enabled
                 .load(std::sync::atomic::Ordering::Relaxed);
-        let audio_btn = button(text(audio_label).size(13))
-            .padding([8, 14])
-            .style(rocker_style(sound_on))
-            .on_press_maybe(audio_available.then_some(Message::ToggleAudio));
+        let sound_caption = if self.audio_error.is_some() {
+            "ERROR"
+        } else {
+            "SOUND"
+        };
+        let sound_indicator = if self.audio_error.is_some() {
+            Color::from_rgb8(0xff, 0x40, 0x30)
+        } else if sound_on {
+            ACCENT
+        } else {
+            TEXT_MUTED.scale_alpha(0.4)
+        };
+        let audio_btn = tooltip(
+            rocker_switch(
+                sound_caption,
+                sound_on,
+                sound_indicator,
+                audio_available.then_some(Message::ToggleAudio),
+            ),
+            container(text(audio_label).size(11).color(TEXT_MAIN))
+                .padding([4, 8])
+                .style(|_: &Theme| container::Style {
+                    background: Some(Background::Color(Color::from_rgb8(0x05, 0x05, 0x04))),
+                    border: Border {
+                        color: PANEL_BORDER,
+                        width: 1.0,
+                        radius: 2.0.into(),
+                    },
+                    ..Default::default()
+                }),
+            tooltip::Position::Bottom,
+        );
 
         // Arrow Up/Down transpose hand-played notes; only worth showing once
         // it's actually been nudged off center.
@@ -2959,7 +3320,7 @@ impl App {
             (0.0f32, "0:00 / 0:00".to_string())
         };
 
-        let scrubber: Element<Message> = if has_file {
+        let slider_widget: Element<Message> = if has_file {
             slider(0.0f32..=1.0, progress, Message::SeekTo)
                 .step(SEEK_STEP)
                 .shift_step(SEEK_STEP / 10.0)
@@ -2973,8 +3334,38 @@ impl App {
                 .width(Length::Fill)
                 .into()
         };
+        // Tick marks sit behind the real slider — pushed under it, so the
+        // slider (the sizing base) stays the fully functional control and the
+        // ticks are purely decorative backdrop, never intercepting input.
+        let scrubber: Element<Message> = Stack::new()
+            .width(Length::Fill)
+            .push(slider_widget)
+            .push_under(
+                Canvas::new(FaderTicks)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .into();
 
-        let transport_row = container(
+        let transport_content: Element<Message> = if self.window_size.width < 1100.0 {
+            column![
+                row![
+                    text("TRANSPORT").size(9).color(TEXT_MUTED),
+                    play_pause_btn,
+                    stop_btn,
+                    looper_btn,
+                    audio_btn,
+                    live_octave_label,
+                ]
+                .spacing(row_gap)
+                .align_y(Alignment::Center),
+                row![scrubber, text(time_str).size(13).color(TEXT_MUTED),]
+                    .spacing(row_gap)
+                    .align_y(Alignment::Center),
+            ]
+            .spacing(row_gap)
+            .into()
+        } else {
             row![
                 text("TRANSPORT").size(9).color(TEXT_MUTED),
                 play_pause_btn,
@@ -2986,21 +3377,24 @@ impl App {
                 text(time_str).size(13).color(TEXT_MUTED),
             ]
             .spacing(row_gap)
-            .align_y(Alignment::Center),
-        )
-        .padding([panel_v, panel_h])
-        .style(panel_style);
+            .align_y(Alignment::Center)
+            .into()
+        };
 
-        // ── Row 3: track mutes ─────────────────────────────────────────────
-        // Only worth showing once there's more than one track to mute/route —
-        // for single-track files (or no file yet) it's just an empty panel.
-        let track_row: Option<Element<Message>> = self
-            .midi_file
-            .as_ref()
-            .filter(|f| f.tracks.len() > 1)
-            .map(|f| {
-            let items: Vec<Element<Message>> =
-                f.tracks
+        let transport_row = textured_panel(
+            container(transport_content).padding([panel_v, panel_h]),
+            PANEL_BG,
+            self.chrome_assets.dark_grain.clone(),
+        );
+
+        // ── Row 3: track mixer ───────────────────────────────────────────────
+        // Always present — a structural module between transport and keyboard,
+        // not something that appears/disappears with file state. Shows an
+        // idle placeholder strip until a file with tracks is loaded.
+        let track_row: Element<Message> = match self.midi_file.as_ref() {
+            Some(f) if !f.tracks.is_empty() => {
+                let items: Vec<Element<Message>> = f
+                    .tracks
                     .iter()
                     .enumerate()
                     .map(|(i, t)| {
@@ -3037,14 +3431,23 @@ impl App {
                                 },
                                 ..Default::default()
                             });
-                        let mute_btn = button(text("MUTE").size(10))
-                            .padding([4, 8])
-                            .style(rocker_style(muted))
-                            .on_press(Message::TrackMuted(i, !muted));
+                        let mute_btn = rocker_switch(
+                            "MUTE",
+                            muted,
+                            if muted {
+                                ACCENT
+                            } else {
+                                TEXT_MUTED.scale_alpha(0.4)
+                            },
+                            Some(Message::TrackMuted(i, !muted)),
+                        );
                         let channel = self.track_channel.get(i).copied().unwrap_or(0);
                         let channel_picker = pick_list(
                             channel_options("CH"),
-                            Some(ChannelOption { prefix: "CH", channel: channel + 1 }),
+                            Some(ChannelOption {
+                                prefix: "CH",
+                                channel: channel + 1,
+                            }),
                             move |opt: ChannelOption| Message::TrackChannel(i, opt.channel - 1),
                         )
                         .text_size(11)
@@ -3059,28 +3462,111 @@ impl App {
                         .text_size(11)
                         .padding([3, 6])
                         .style(channel_pick_list_style);
-                        row![led, name_plate, mute_btn, channel_picker, octave_picker,]
-                            .spacing(6)
-                            .align_y(Alignment::Center)
-                            .into()
+                        // Each track is its own bordered mini channel strip —
+                        // a distinct module nested in the mixer bed, not a
+                        // toolbar row of loose controls.
+                        container(
+                            row![led, name_plate, mute_btn, channel_picker, octave_picker]
+                                .spacing(8)
+                                .align_y(Alignment::Center),
+                        )
+                        .width(Length::Fixed(350.0))
+                        .padding(mixer_strip_padding)
+                        .style(mixer_strip_style)
+                        .into()
                     })
                     .collect();
-            let tracks = scrollable(row(items).spacing(track_gap).align_y(Alignment::Center))
+                let tracks = scrollable(row(items).spacing(track_gap).align_y(Alignment::Center))
+                    .direction(scrollable::Direction::Horizontal(
+                        scrollable::Scrollbar::new().width(6).scroller_width(6),
+                    ));
+                textured_panel(
+                    container(
+                        row![text("TRACKS").size(10).color(TEXT_MUTED), tracks]
+                            .spacing(row_gap)
+                            .align_y(Alignment::Center),
+                    )
+                    // A bit taller than the other panels — with both a channel
+                    // and an octave picker per track now, the row reads as
+                    // cramped at the same vertical padding as single-line panels.
+                    .padding([mixer_panel_v, panel_h]),
+                    PANEL_BG_DARK,
+                    self.chrome_assets.dark_grain.clone(),
+                )
+            }
+            _ => {
+                // Idle state mirrors real channel-strip geometry. Controls are
+                // visibly inactive, but the mixer never collapses into a status
+                // sentence merely because its data source is empty.
+                let placeholder_items: Vec<Element<Message>> = ["TRACK 1", "TRACK 2", "TRACK 3"]
+                    .into_iter()
+                    .map(|name| {
+                        let led =
+                            container(text(""))
+                                .width(10)
+                                .height(10)
+                                .style(|_| container::Style {
+                                    background: Some(Background::Color(Color::from_rgb8(
+                                        0x32, 0x31, 0x29,
+                                    ))),
+                                    border: Border {
+                                        color: Color::from_rgb8(0x08, 0x08, 0x06),
+                                        width: 1.0,
+                                        radius: 999.0.into(),
+                                    },
+                                    ..Default::default()
+                                });
+                        let name_plate =
+                            container(text(name).size(12).color(TEXT_MUTED.scale_alpha(0.68)))
+                                .padding([4, 8])
+                                .width(Length::Fill)
+                                .style(inactive_control_style);
+                        let mute = rocker_switch("MUTE", false, TEXT_MUTED.scale_alpha(0.25), None);
+                        let channel = container(text("CH  --").size(11))
+                            .padding([5, 7])
+                            .style(inactive_control_style);
+                        let octave = container(text("OCT  --").size(11))
+                            .padding([5, 7])
+                            .style(inactive_control_style);
+
+                        container(
+                            row![led, name_plate, mute, channel, octave]
+                                .spacing(8)
+                                .align_y(Alignment::Center),
+                        )
+                        .width(Length::Fixed(350.0))
+                        .padding(mixer_strip_padding)
+                        .style(mixer_strip_style)
+                        .into()
+                    })
+                    .collect();
+                let placeholders = scrollable(
+                    row(placeholder_items)
+                        .spacing(track_gap)
+                        .align_y(Alignment::Center),
+                )
                 .direction(scrollable::Direction::Horizontal(
                     scrollable::Scrollbar::new().width(6).scroller_width(6),
                 ));
-            container(
-                row![text("TRACKS").size(10).color(TEXT_MUTED), tracks]
-                    .spacing(row_gap)
-                    .align_y(Alignment::Center),
-            )
-            // A bit taller than the other panels — with both a channel and an
-            // octave picker per track now, the row reads as cramped at the
-            // same vertical padding used for single-line panels.
-            .padding([panel_v + 4.0, panel_h])
-            .style(mixer_panel_style)
-            .into()
-        });
+                textured_panel(
+                    container(
+                        row![
+                            column![
+                                text("TRACKS").size(10).color(TEXT_MUTED),
+                                text("IDLE").size(9).color(TEXT_MUTED.scale_alpha(0.5)),
+                            ]
+                            .spacing(2),
+                            placeholders,
+                        ]
+                        .spacing(row_gap)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([mixer_panel_v, panel_h]),
+                    PANEL_BG_DARK,
+                    self.chrome_assets.dark_grain.clone(),
+                )
+            }
+        };
 
         // ── Keyboard canvas ────────────────────────────────────────────────
         // A staff selection takes priority: it shows exactly what's selected,
@@ -3098,51 +3584,53 @@ impl App {
         let overlay_highlighted = None;
 
         // Keep one uniform photographic scale for the shell, keys and controls.
-        // Compact/manual heights shorten the viewport around that board instead
+        // Compact heights shorten the viewport around that board instead
         // of scaling the instrument down to fit the shorter rectangle.
         const BOARD_ASPECT: f32 = 1949.0 / 807.0;
+        // `CHROME_BEZEL` (the keyboard/staff bezel width) is baked into this
+        // sizing math so it can't reintroduce the earlier letterboxing bug.
         // The true available width inside the centered, rail-flanked shell —
         // capped at the shell's own max-width and reduced by the wood rails —
         // not the raw window width, or the board's contain-fit scale would be
         // computed against a wider box than it's actually laid out in and
         // leave letterboxed empty space around the keyboard.
-        let shell_width = self
-            .window_size
-            .width
-            .min(1600.0 + rail_width * 2.0)
-            - rail_width * 2.0;
-        let width_limited = ((shell_width - outer_pad * 2.0) / BOARD_ASPECT).max(1.0);
-        let chrome_reserve = if track_row.is_some() { 225.0 } else { 175.0 }
-            + if self.window_size.width < 1180.0 {
-                42.0
-            } else {
-                0.0
-            };
+        let shell_width = self.window_size.width.min(1600.0 + rail_width * 2.0) - rail_width * 2.0;
+        let width_limited =
+            ((shell_width - outer_pad * 2.0 - CHROME_BEZEL * 2.0) / BOARD_ASPECT).max(1.0);
+        // The track mixer module is always present now, so its height is
+        // always reserved (previously conditional on a multi-track file).
+        let chrome_reserve = if dense_desktop { 205.0 } else { 362.0 };
         let staff_reserve = if has_file {
-            if self.compact_keyboard || self.window_size.width < 1180.0 {
+            if self.compact_keyboard || !dense_desktop {
                 155.0
             } else {
-                215.0
+                150.0
             }
         } else if self.compact_keyboard {
             90.0
+        } else if dense_desktop {
+            120.0
         } else {
-            145.0
+            175.0
         };
-        let height_limited =
-            (self.window_size.height - chrome_reserve - staff_reserve - outer_pad * 2.0).max(120.0);
+        let height_limited = (self.window_size.height
+            - chrome_reserve
+            - staff_reserve
+            - outer_pad * 2.0
+            - CHROME_BEZEL * 2.0)
+            .max(120.0);
         // Compact mode is the photographed working-surface crop: the power
         // switch/control bank through every key row, without the outer header
         // and footer. Its own aspect ratio determines the viewport height.
         let mode_height = if self.compact_keyboard {
-            (shell_width - outer_pad * 2.0) / render::COMPACT_BOARD_ASPECT
+            (shell_width - outer_pad * 2.0 - CHROME_BEZEL * 2.0) / render::COMPACT_BOARD_ASPECT
         } else {
             width_limited.min(620.0)
         };
         let automatic_keyboard_height = height_limited.min(mode_height);
 
         // Manual resizing may reclaim more room than the automatic layout, but
-        // always leaves a usable strip for the staff/manual and never grows
+        // always leaves a usable strip for the visualizer and never grows
         // beyond the photograph's width-limited natural height.
         let resize_min = width_limited
             .min(if self.window_size.height < 650.0 {
@@ -3155,7 +3643,12 @@ impl App {
         let resize_max = width_limited
             .min(620.0)
             .min(
-                (self.window_size.height - chrome_reserve - staff_floor - outer_pad * 2.0 - 16.0)
+                (self.window_size.height
+                    - chrome_reserve
+                    - staff_floor
+                    - outer_pad * 2.0
+                    - CHROME_BEZEL * 2.0
+                    - resize_handle_height)
                     .max(resize_min),
             )
             .max(resize_min);
@@ -3191,23 +3684,66 @@ impl App {
             max_height: resize_max,
         })
         .width(Length::Fill)
-        .height(16.0);
-        let keyboard_region = column![keyboard, keyboard_resize].spacing(0);
+        .height(resize_handle_height);
+        let keyboard_region = container(column![keyboard, keyboard_resize].spacing(0))
+            .padding(CHROME_BEZEL)
+            .style(bezel_style);
 
-        // ── Staff canvas — shows its own "load a file" empty state ──────────
-        let staff: Element<Message> = Canvas::new(StaffCanvas {
-            midi_file: self.midi_file.as_ref(),
-            position_tick: self.position_tick,
-            track_muted: &self.track_muted,
-            octave_offset: self.octave_offset,
-            track_octave: &self.track_octave,
-            selection: self.staff_selection,
-            keyboard_notes: &self.keyboard_notes,
-            drum_note_to_key: &self.drum_note_to_key,
-        })
+        // ── Visualizer panel ──────────────────────────────────────────────
+        // The complete housing remains mounted in the rack in every state;
+        // only the content drawn on its inner screen changes when a file loads.
+        let staff_screen: Element<Message> = container(
+            Canvas::new(StaffCanvas {
+                midi_file: self.midi_file.as_ref(),
+                position_tick: self.position_tick,
+                track_muted: &self.track_muted,
+                octave_offset: self.octave_offset,
+                track_octave: &self.track_octave,
+                selection: self.staff_selection,
+                keyboard_notes: &self.keyboard_notes,
+                drum_note_to_key: &self.drum_note_to_key,
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .padding(CHROME_BEZEL)
         .width(Length::Fill)
         .height(Length::Fill)
+        .style(crt_screen_style)
         .into();
+        let visualizer_state = if has_file {
+            "SIGNAL / STAFF"
+        } else {
+            "STANDBY / NO FILE"
+        };
+        let visualizer_header = row![
+            text("VISUALIZER").size(10).color(TEXT_MUTED),
+            text(visualizer_state)
+                .size(9)
+                .color(LCD_TEXT.scale_alpha(if has_file { 0.78 } else { 0.45 })),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center);
+        let staff_panel = textured_panel(
+            container(
+                column![visualizer_header, staff_screen]
+                    .spacing(6)
+                    .height(Length::Fill),
+            )
+            .padding([7, 8])
+            .height(Length::Fill),
+            PANEL_BG_DARK,
+            self.chrome_assets.dark_grain.clone(),
+        );
+        let visualizer_height = if dense_desktop && !has_file {
+            Length::Fixed(120.0)
+        } else {
+            Length::Fill
+        };
+        let staff: Element<Message> = container(staff_panel)
+            .width(Length::Fill)
+            .height(visualizer_height)
+            .into();
 
         // ── Selection info ────────────────────────────────────────────────
         let selection_row: Element<Message> = if has_file {
@@ -3223,17 +3759,33 @@ impl App {
         // above/below it — no padding of its own — so the photographed board
         // gets every pixel the layout can give it instead of floating in a
         // dark margin. Padding lives on the sections above and below instead.
-        let mut above_children: Vec<Element<Message>> = vec![file_row.into(), transport_row.into()];
-        if let Some(track_row) = track_row {
-            above_children.push(track_row);
-        }
-        let above_keyboard = container(column(above_children).spacing(section_gap)).padding(
-            Padding { top: outer_pad, right: outer_pad, bottom: 0.0, left: outer_pad },
-        );
+        let above_children: Vec<Element<Message>> =
+            vec![file_row.into(), transport_row.into(), track_row.into()];
+        let above_keyboard =
+            container(column(above_children).spacing(section_gap)).padding(Padding {
+                top: outer_pad,
+                right: outer_pad,
+                bottom: 0.0,
+                left: outer_pad,
+            });
 
-        let below_keyboard = container(column![staff, selection_row].spacing(section_gap).height(Length::Fill))
-            .padding(Padding { top: 0.0, right: outer_pad, bottom: outer_pad, left: outer_pad })
-            .height(Length::Fill);
+        let below_height = if dense_desktop && !has_file {
+            Length::Shrink
+        } else {
+            Length::Fill
+        };
+        let below_keyboard = container(
+            column![staff, selection_row]
+                .spacing(section_gap)
+                .height(below_height),
+        )
+        .padding(Padding {
+            top: 0.0,
+            right: outer_pad,
+            bottom: outer_pad,
+            left: outer_pad,
+        })
+        .height(below_height);
 
         let content = column![above_keyboard, keyboard_region, below_keyboard]
             .spacing(0)
@@ -3259,6 +3811,7 @@ impl App {
                     .height(Length::Fill)
                     .content_fit(ContentFit::Cover)
                     .filter_method(FilterMethod::Linear)
+                    .opacity(0.8f32)
             };
             row![rail(), inner, rail()].into()
         } else {
@@ -3271,25 +3824,17 @@ impl App {
             .height(Length::Fill)
             .into();
 
-        // A barely-visible dark-grain wash over the whole page, sitting behind
-        // every panel — the "primary equipment-panel surface" texture, applied
-        // once at the shell root rather than per-panel (see plan notes on why).
-        container(stack![
-            image_widget(self.chrome_assets.dark_grain.clone())
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .content_fit(ContentFit::Cover)
-                .opacity(0.05f32),
-            centered_shell,
-        ])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(Background::Color(APP_BG)),
-            text_color: Some(TEXT_MAIN),
-            ..Default::default()
-        })
-        .into()
+        // The page itself stays neutral and texture-free. Grain belongs to the
+        // equipment panels above, while walnut is limited to the two side rails.
+        container(centered_shell)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(APP_BG)),
+                text_color: Some(TEXT_MAIN),
+                ..Default::default()
+            })
+            .into()
     }
 }
 

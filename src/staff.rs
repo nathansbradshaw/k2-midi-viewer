@@ -293,14 +293,45 @@ fn draw_staff(
 
     frame.fill(
         &Path::rectangle(Point::ORIGIN, size),
-        Color::from_rgb8(0x09, 0x09, 0x15),
+        Color::from_rgb8(0x08, 0x09, 0x04),
     );
+
+    // Persistent phosphor grid and restrained scanlines keep the display
+    // visually active in standby without turning the empty state into a
+    // different component. These are presentation-only; staff geometry and
+    // note interaction remain unchanged.
+    let grid_color = Color::from_rgba8(0xd2, 0x96, 0x1e, 0.10);
+    let mut x = 0.0;
+    while x <= w {
+        frame.stroke(
+            &Path::line(Point::new(x, 0.0), Point::new(x, h)),
+            canvas::Stroke::default().with_color(grid_color).with_width(1.0),
+        );
+        x += 64.0;
+    }
+    let mut y = 0.0;
+    while y <= h {
+        frame.stroke(
+            &Path::line(Point::new(0.0, y), Point::new(w, y)),
+            canvas::Stroke::default().with_color(grid_color).with_width(1.0),
+        );
+        y += 32.0;
+    }
+    let scanline_color = Color::from_rgba(0.0, 0.0, 0.0, 0.075);
+    let mut scan_y = 2.0;
+    while scan_y < h {
+        frame.fill(
+            &Path::rectangle(Point::new(0.0, scan_y), Size::new(w, 1.0)),
+            scanline_color,
+        );
+        scan_y += 4.0;
+    }
 
     let Some(f) = midi else {
         frame.fill_text(Text {
             content: "Load a MIDI file to see staff notation".to_string(),
             position: Point::new(w / 2.0, h / 2.0),
-            color: Color::from_rgb8(0x76, 0x62, 0x7E),
+            color: Color::from_rgba8(0xe9, 0xa3, 0x29, 0.72),
             size: iced::Pixels(15.0),
             font: CANVAS_FONT,
             align_x: Horizontal::Center.into(),
@@ -364,7 +395,7 @@ fn draw_staff(
     // ── Staff lines ──────────────────────────────────────────────────────────
     // Single treble staff — the device's range rarely dips into bass territory,
     // so notes below middle C are shown with ledger lines instead of a bass staff.
-    let line_col = Color::from_rgb8(0x4A, 0x35, 0x54);
+    let line_col = Color::from_rgba8(0xd2, 0x96, 0x1e, 0.34);
     for &s in &[2i32, 4, 6, 8, 10] {
         frame.stroke(
             &Path::line(Point::new(CLEF_WIDTH - 4.0, slot_y(s)), Point::new(w, slot_y(s))),
@@ -381,7 +412,7 @@ fn draw_staff(
         let vis_start = pos.saturating_sub(((BEHIND_BEATS + 1.0) * tpb) as u64);
         let vis_end   = pos + ((AHEAD_BEATS + 1.0) * tpb) as u64;
         let first     = (vis_start / ticks_per_bar) * ticks_per_bar;
-        let bar_col   = Color::from_rgb8(0x2B, 0x20, 0x38);
+        let bar_col   = Color::from_rgba8(0xd2, 0x96, 0x1e, 0.16);
         let mut bt    = first;
         while bt <= vis_end {
             let x = tick_x(bt);
@@ -399,7 +430,7 @@ fn draw_staff(
     }
 
     // ── Clef symbol ─────────────────────────────────────────────────────────
-    let clef_col = Color::from_rgb8(0xED, 0xC8, 0x9C);
+    let clef_col = Color::from_rgb8(0xdf, 0xb8, 0x69);
     draw_treble_clef(frame, slot_y(4), clef_col);
 
     // ── Notes ───────────────────────────────────────────────────────────────
@@ -510,7 +541,7 @@ fn draw_staff(
     frame.stroke(
         &Path::line(Point::new(playhead_x, 0.0), Point::new(playhead_x, h)),
         canvas::Stroke::default()
-            .with_color(Color::from_rgba8(0xFF, 0x4F, 0x87, 0.92))
+            .with_color(Color::from_rgba8(0xE9, 0xA3, 0x29, 0.92))
             .with_width(2.0),
     );
 }
