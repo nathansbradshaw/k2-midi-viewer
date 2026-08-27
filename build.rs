@@ -57,6 +57,11 @@ fn main() {
     for name in source_names {
         println!("cargo:rerun-if-changed={}", asset_dir.join(name).display());
     }
+    let clean_numpad_name = "numpad-clean.png";
+    println!(
+        "cargo:rerun-if-changed={}",
+        asset_dir.join(clean_numpad_name).display()
+    );
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/key_geometry.rs");
 
@@ -68,6 +73,9 @@ fn main() {
                 .into_rgba8()
         })
         .collect();
+    let clean_numpad = image::open(asset_dir.join(clean_numpad_name))
+        .unwrap_or_else(|error| panic!("could not open {clean_numpad_name}: {error}"))
+        .into_rgba8();
     let specs = sprite_specs();
     assert_eq!(specs.len(), 100);
 
@@ -86,26 +94,46 @@ fn main() {
         let mut resting =
             image::imageops::crop_imm(source, crop.0, crop.1, crop.2, crop.3).to_image();
         isolate_key(&mut resting);
-
-        generated.push_str("    [\n");
-        for variant in 0..11 {
-            let mut pixels = resting.clone();
-            if let Some(color) = variant_color(*spec, variant) {
-                recolor_key(&mut pixels, color, *spec);
-            }
-            let file_name = format!("key-{}-{variant}.webp", spec.id);
-            write_webp(&sprite_dir.join(&file_name), &pixels);
-            generated.push_str(&format!(
-                "        include_bytes!(concat!(env!(\"OUT_DIR\"), \"/k2-key-sprites/{file_name}\")),\n"
-            ));
-        }
-        generated.push_str("    ],\n");
+        append_sprite_variants(&mut generated, &sprite_dir, *spec, &resting, "key");
+    }
+    generated.push_str(
+        "];\n\
+         static PREPROCESSED_DRUM_KEY_SPRITES: [[&[u8]; 11]; 20] = [\n",
+    );
+    for spec in specs
+        .iter()
+        .filter(|spec| matches!(spec.group, KeyGroup::Numpad))
+    {
+        let rect = key_geometry::clean_numpad_key_source_rect(
+            spec.column as usize,
+            spec.row as usize,
+        );
+        let mut resting = image::imageops::crop_imm(
+            &clean_numpad,
+            rect.x.round() as u32,
+            rect.y.round() as u32,
+            rect.width.round() as u32,
+            rect.height.round() as u32,
+        )
+        .to_image();
+        isolate_key(&mut resting);
+        append_sprite_variants(
+            &mut generated,
+            &sprite_dir,
+            *spec,
+            &resting,
+            "drum-key",
+        );
     }
     generated.push_str(
         "];\n\
          fn preprocessed_key_sprite(key_id: u32, variant: u8) -> Option<&'static [u8]> {\n\
              let key = key_id.checked_sub(14)? as usize;\n\
              PREPROCESSED_KEY_SPRITES.get(key)?.get(variant as usize).copied()\n\
+         }\n\
+         fn preprocessed_drum_key_sprite(key_id: u32, variant: u8) -> Option<&'static [u8]> {\n\
+             let key = key_id.checked_sub(94)? as usize;\n\
+             PREPROCESSED_DRUM_KEY_SPRITES.get(key)?.get(variant as usize).copied()\n\
          }\n",
     );
     let mut manifest = File::create(output_dir.join("k2_key_sprites.rs"))
@@ -113,6 +141,28 @@ fn main() {
     manifest
         .write_all(generated.as_bytes())
         .expect("could not write generated key sprite manifest");
+}
+
+fn append_sprite_variants(
+    generated: &mut String,
+    sprite_dir: &Path,
+    spec: SpriteSpec,
+    resting: &RgbaImage,
+    prefix: &str,
+) {
+    generated.push_str("    [\n");
+    for variant in 0..11 {
+        let mut pixels = resting.clone();
+        if let Some(color) = variant_color(spec, variant) {
+            recolor_key(&mut pixels, color, spec);
+        }
+        let file_name = format!("{prefix}-{}-{variant}.webp", spec.id);
+        write_webp(&sprite_dir.join(&file_name), &pixels);
+        generated.push_str(&format!(
+            "        include_bytes!(concat!(env!(\"OUT_DIR\"), \"/k2-key-sprites/{file_name}\")),\n"
+        ));
+    }
+    generated.push_str("    ],\n");
 }
 
 fn sprite_specs() -> Vec<SpriteSpec> {
@@ -210,6 +260,15 @@ fn sprite_specs() -> Vec<SpriteSpec> {
 fn source_crop(spec: SpriteSpec, source: &RgbaImage) -> (u32, u32, u32, u32) {
     if matches!(spec.group, KeyGroup::Alpha) {
         let rect = key_geometry::alpha_key_source_rect(spec.source + 1, spec.column, spec.width);
+        return (
+            rect.x.round() as u32,
+            rect.y.round() as u32,
+            rect.width.round() as u32,
+            rect.height.round() as u32,
+        );
+    }
+    if matches!(spec.group, KeyGroup::Numpad) {
+        let rect = key_geometry::numpad_key_source_rect(spec.column as usize, spec.row as usize);
         return (
             rect.x.round() as u32,
             rect.y.round() as u32,

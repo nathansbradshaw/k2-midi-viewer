@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 300" preserveAspectRatio="none" role="img" aria-labelledby="title desc">
+  <title id="title">Subtle transparent LCD glass overlay</title>
+  <desc id="desc">A clear rounded pane with a faint edge vignette, reflection, and micro scratches.</desc>
+  <defs>
+    <clipPath id="glass-clip">
+      <rect x="14" y="14" width="932" height="272" rx="28"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#glass-clip)">
+    <rect x="14" y="14" width="932" height="272" rx="28" fill="#0b0d0c" fill-opacity=".025"/>
+    <path d="M-80 238L205 -12H259L-25 290Z" fill="#fff" fill-opacity=".075"/>
+    <path d="M-28 275L255 -1H273L-11 289Z" fill="#fff" fill-opacity=".035"/>
+    <path d="M743 36L722 72" stroke="#fff" stroke-opacity=".035" stroke-width="1"/>
+    <path d="M267 186L298 178" stroke="#0c0f0c" stroke-opacity=".025" stroke-width="1"/>
+  </g>
+  <rect x="14.75" y="14.75" width="930.5" height="270.5" rx="27.25" fill="none" stroke="#030403" stroke-opacity=".42" stroke-width="3.5"/>
+  <rect x="19" y="19" width="922" height="262" rx="24" fill="none" stroke="#eef0e7" stroke-opacity=".15"/>
+  <rect x="23" y="23" width="914" height="254" rx="21" fill="none" stroke="#10130f" stroke-opacity=".08" stroke-width="10"/>
+</svg>

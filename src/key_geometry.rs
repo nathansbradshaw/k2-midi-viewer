@@ -1,5 +1,5 @@
 //! Pixel-space calibration extracted from annotated copies of the photographic
-//! alpha-row sources. This module is also included by `build.rs`, keeping sprite
+//! key sources. This module is also included by `build.rs`, keeping sprite
 //! extraction and runtime placement on the same geometry.
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,6 +24,161 @@ pub const ALPHA_SOURCE_SIZES: [(f32, f32); 5] = [
     (2114.0, 184.0),
     (2128.0, 184.0),
     (2131.0, 177.0),
+];
+
+pub const NUMPAD_SOURCE_SIZE: (f32, f32) = (598.0, 738.0);
+pub const CLEAN_NUMPAD_SOURCE_SIZE: (f32, f32) = (1166.0, 1349.0);
+
+// Red separator centers from `numpad copy.png`. The photographed grid is
+// slightly irregular, so each row keeps its own column boundaries.
+const NUMPAD_COLUMN_BOUNDARIES: [[f32; 5]; 5] = [
+    [0.0, 168.0, 307.0, 446.0, 598.0],
+    [0.0, 163.0, 299.0, 433.0, 598.0],
+    [0.0, 162.0, 300.0, 433.0, 598.0],
+    [0.0, 162.0, 300.0, 433.0, 598.0],
+    [0.0, 161.0, 299.0, 433.0, 598.0],
+];
+
+const NUMPAD_ROW_BOUNDARIES: [f32; 6] = [0.0, 158.0, 296.0, 442.0, 581.0, 738.0];
+
+// Dark separator valleys from `numpad-clean.png`. This blank-cap source is a
+// larger reconstruction rather than a same-size copy of `numpad.png`, so it
+// needs its own crop table for drum-symbol mode.
+const CLEAN_NUMPAD_COLUMN_BOUNDARIES: [[f32; 5]; 5] = [
+    [0.0, 313.0, 583.0, 858.0, CLEAN_NUMPAD_SOURCE_SIZE.0],
+    [0.0, 304.0, 575.0, 843.0, CLEAN_NUMPAD_SOURCE_SIZE.0],
+    [0.0, 301.0, 569.0, 838.0, CLEAN_NUMPAD_SOURCE_SIZE.0],
+    [0.0, 302.0, 569.0, 842.0, CLEAN_NUMPAD_SOURCE_SIZE.0],
+    [0.0, 301.0, 571.0, 845.0, CLEAN_NUMPAD_SOURCE_SIZE.0],
+];
+
+const CLEAN_NUMPAD_ROW_BOUNDARIES: [f32; 6] =
+    [0.0, 284.0, 538.0, 796.0, 1051.0, CLEAN_NUMPAD_SOURCE_SIZE.1];
+
+// Outer pixel extents of the yellow safe-text boxes in `numpad copy.png`, in
+// row-major order. The first two boxes are clipped at their red divider because
+// the marker strokes overlap it by a pixel or two.
+const NUMPAD_TEXT_BOUNDS: [SourceRect; 20] = [
+    SourceRect {
+        x: 80.0,
+        y: 34.0,
+        width: 88.0,
+        height: 103.0,
+    },
+    SourceRect {
+        x: 218.0,
+        y: 24.0,
+        width: 89.0,
+        height: 103.0,
+    },
+    SourceRect {
+        x: 357.0,
+        y: 26.0,
+        width: 87.0,
+        height: 105.0,
+    },
+    SourceRect {
+        x: 493.0,
+        y: 25.0,
+        width: 89.0,
+        height: 104.0,
+    },
+    SourceRect {
+        x: 72.0,
+        y: 166.0,
+        width: 88.0,
+        height: 101.0,
+    },
+    SourceRect {
+        x: 203.0,
+        y: 167.0,
+        width: 96.0,
+        height: 101.0,
+    },
+    SourceRect {
+        x: 342.0,
+        y: 167.0,
+        width: 88.0,
+        height: 104.0,
+    },
+    SourceRect {
+        x: 478.0,
+        y: 165.0,
+        width: 89.0,
+        height: 105.0,
+    },
+    SourceRect {
+        x: 64.0,
+        y: 303.0,
+        width: 95.0,
+        height: 106.0,
+    },
+    SourceRect {
+        x: 200.0,
+        y: 305.0,
+        width: 89.0,
+        height: 102.0,
+    },
+    SourceRect {
+        x: 334.0,
+        y: 304.0,
+        width: 97.0,
+        height: 105.0,
+    },
+    SourceRect {
+        x: 472.0,
+        y: 309.0,
+        width: 89.0,
+        height: 106.0,
+    },
+    SourceRect {
+        x: 64.0,
+        y: 446.0,
+        width: 97.0,
+        height: 107.0,
+    },
+    SourceRect {
+        x: 198.0,
+        y: 454.0,
+        width: 96.0,
+        height: 107.0,
+    },
+    SourceRect {
+        x: 335.0,
+        y: 447.0,
+        width: 96.0,
+        height: 107.0,
+    },
+    SourceRect {
+        x: 474.0,
+        y: 453.0,
+        width: 97.0,
+        height: 107.0,
+    },
+    SourceRect {
+        x: 61.0,
+        y: 592.0,
+        width: 95.0,
+        height: 108.0,
+    },
+    SourceRect {
+        x: 209.0,
+        y: 589.0,
+        width: 86.0,
+        height: 109.0,
+    },
+    SourceRect {
+        x: 343.0,
+        y: 590.0,
+        width: 87.0,
+        height: 108.0,
+    },
+    SourceRect {
+        x: 485.0,
+        y: 592.0,
+        width: 85.0,
+        height: 107.0,
+    },
 ];
 
 pub const fn has_annotated_boundaries(row: usize) -> bool {
@@ -496,6 +651,35 @@ pub fn alpha_text_guide(row: usize, col: f32) -> Option<TextGuide> {
     }
 }
 
+/// Returns the measured source-pixel crop for one key in the 4x5 numpad.
+pub fn numpad_key_source_rect(column: usize, row: usize) -> SourceRect {
+    let columns = NUMPAD_COLUMN_BOUNDARIES[row];
+    SourceRect {
+        x: columns[column],
+        y: NUMPAD_ROW_BOUNDARIES[row],
+        width: columns[column + 1] - columns[column],
+        height: NUMPAD_ROW_BOUNDARIES[row + 1] - NUMPAD_ROW_BOUNDARIES[row],
+    }
+}
+
+/// Returns the source crop for a blank cap in `numpad-clean.png`.
+pub fn clean_numpad_key_source_rect(column: usize, row: usize) -> SourceRect {
+    let columns = CLEAN_NUMPAD_COLUMN_BOUNDARIES[row];
+    SourceRect {
+        x: columns[column],
+        y: CLEAN_NUMPAD_ROW_BOUNDARIES[row],
+        width: columns[column + 1] - columns[column],
+        height: CLEAN_NUMPAD_ROW_BOUNDARIES[row + 1] - CLEAN_NUMPAD_ROW_BOUNDARIES[row],
+    }
+}
+
+pub fn numpad_text_guide(column: usize, row: usize) -> Option<TextGuide> {
+    NUMPAD_TEXT_BOUNDS
+        .get(row.checked_mul(4)?.checked_add(column)?)
+        .copied()
+        .map(TextGuide::Bounds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,5 +734,56 @@ mod tests {
             assert_guide(5, column as f32 + 0.5, 1.0);
         }
         assert_guide(5, 13.5, 1.5);
+    }
+
+    #[test]
+    fn numpad_boundaries_cover_the_source_without_gaps() {
+        for columns in NUMPAD_COLUMN_BOUNDARIES {
+            assert_eq!(columns.first(), Some(&0.0));
+            assert_eq!(columns.last(), Some(&NUMPAD_SOURCE_SIZE.0));
+            assert!(columns.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+        assert_eq!(NUMPAD_ROW_BOUNDARIES.first(), Some(&0.0));
+        assert_eq!(NUMPAD_ROW_BOUNDARIES.last(), Some(&NUMPAD_SOURCE_SIZE.1));
+        assert!(
+            NUMPAD_ROW_BOUNDARIES
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
+    }
+
+    #[test]
+    fn clean_numpad_boundaries_cover_the_source_without_gaps() {
+        for columns in CLEAN_NUMPAD_COLUMN_BOUNDARIES {
+            assert_eq!(columns.first(), Some(&0.0));
+            assert_eq!(columns.last(), Some(&CLEAN_NUMPAD_SOURCE_SIZE.0));
+            assert!(columns.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+        assert_eq!(CLEAN_NUMPAD_ROW_BOUNDARIES.first(), Some(&0.0));
+        assert_eq!(
+            CLEAN_NUMPAD_ROW_BOUNDARIES.last(),
+            Some(&CLEAN_NUMPAD_SOURCE_SIZE.1)
+        );
+        assert!(
+            CLEAN_NUMPAD_ROW_BOUNDARIES
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
+    }
+
+    #[test]
+    fn every_numpad_text_box_stays_inside_its_key() {
+        for row in 0..5 {
+            for column in 0..4 {
+                let key = numpad_key_source_rect(column, row);
+                let Some(TextGuide::Bounds(bounds)) = numpad_text_guide(column, row) else {
+                    panic!("numpad key must have a bounded text guide");
+                };
+                assert!(bounds.x >= key.x);
+                assert!(bounds.x + bounds.width <= key.x + key.width);
+                assert!(bounds.y >= key.y);
+                assert!(bounds.y + bounds.height <= key.y + key.height);
+            }
+        }
     }
 }

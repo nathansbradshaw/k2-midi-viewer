@@ -18,7 +18,7 @@ pub struct PhotoBoardAssets {
     pub shell: iced::widget::image::Handle,
     pub leds: iced::widget::image::Handle,
     pub display: iced::widget::image::Handle,
-    key_sprites: RefCell<HashMap<(KeyId, u8), iced::widget::image::Handle>>,
+    key_sprites: RefCell<HashMap<(KeyId, u8, bool), iced::widget::image::Handle>>,
 }
 
 impl PhotoBoardAssets {
@@ -39,6 +39,7 @@ impl PhotoBoardAssets {
         &self,
         key: &Key,
         lit_track: Option<usize>,
+        blank_numpad: bool,
     ) -> Option<iced::widget::image::Handle> {
         let variant = match lit_track {
             None => 0,
@@ -46,14 +47,24 @@ impl PhotoBoardAssets {
             Some(usize::MAX) => 9,
             Some(track) => 1 + (track % TRACK_COLORS.len()) as u8,
         };
-        if let Some(handle) = self.key_sprites.borrow().get(&(key.id, variant)).cloned() {
+        let blank_numpad = blank_numpad && matches!(key.cluster, Cluster::Numpad);
+        if let Some(handle) = self
+            .key_sprites
+            .borrow()
+            .get(&(key.id, variant, blank_numpad))
+            .cloned()
+        {
             return Some(handle);
         }
-        let handle =
-            iced::widget::image::Handle::from_bytes(preprocessed_key_sprite(key.id.0, variant)?);
+        let bytes = if blank_numpad {
+            preprocessed_drum_key_sprite(key.id.0, variant)?
+        } else {
+            preprocessed_key_sprite(key.id.0, variant)?
+        };
+        let handle = iced::widget::image::Handle::from_bytes(bytes);
         self.key_sprites
             .borrow_mut()
-            .insert((key.id, variant), handle.clone());
+            .insert((key.id, variant, blank_numpad), handle.clone());
         Some(handle)
     }
 }
@@ -566,12 +577,20 @@ fn key_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Rectangle {
             width: key.w * (ARROW_W / 3.0),
             height: key.h * (ARROW_H / 2.0),
         },
-        Cluster::Numpad => Rectangle {
-            x: NUMPAD_X + (key.col - 19.0) * (NUMPAD_W / 4.0),
-            y: NUMPAD_Y + key.row * (NUMPAD_H / 5.0),
-            width: key.w * (NUMPAD_W / 4.0),
-            height: key.h * (NUMPAD_H / 5.0),
-        },
+        Cluster::Numpad => {
+            let source = key_geometry::numpad_key_source_rect(
+                (key.col - 19.0).round() as usize,
+                key.row.round() as usize,
+            );
+            let x_scale = NUMPAD_W / key_geometry::NUMPAD_SOURCE_SIZE.0;
+            let y_scale = NUMPAD_H / key_geometry::NUMPAD_SOURCE_SIZE.1;
+            Rectangle {
+                x: NUMPAD_X + source.x * x_scale,
+                y: NUMPAD_Y + source.y * y_scale,
+                width: source.width * x_scale,
+                height: source.height * y_scale,
+            }
+        }
         Cluster::Encoder => {
             let index = key.knob_index.unwrap_or(12);
             if index == 12 {
@@ -618,7 +637,12 @@ fn key_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Rectangle {
     )
 }
 
-fn key_sprite_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Rectangle {
+fn key_sprite_rect_with_size(
+    key: &Key,
+    size: Size,
+    compact_crop: bool,
+    blank_numpad: bool,
+) -> Rectangle {
     let rect = key_rect_with_size(key, size, compact_crop);
     let source_aspect = match key.cluster {
         Cluster::Alpha | Cluster::AlphaLight => {
@@ -628,7 +652,16 @@ fn key_sprite_rect_with_size(key: &Key, size: Size, compact_crop: bool) -> Recta
         }
         Cluster::Nav => (467.0 / 3.0 * key.w) / (308.0 / 2.0 * key.h),
         Cluster::Arrow => (456.0 / 3.0 * key.w) / (322.0 / 2.0 * key.h),
-        Cluster::Numpad => (598.0 / 4.0 * key.w) / (738.0 / 5.0 * key.h),
+        Cluster::Numpad => {
+            let column = (key.col - 19.0).round() as usize;
+            let row = key.row.round() as usize;
+            let crop = if blank_numpad {
+                key_geometry::clean_numpad_key_source_rect(column, row)
+            } else {
+                key_geometry::numpad_key_source_rect(column, row)
+            };
+            crop.width / crop.height
+        }
         Cluster::Encoder => return rect,
     };
     Rectangle {
@@ -687,6 +720,52 @@ fn alpha_text_guide_with_size(
             ))
         }
     }
+}
+
+fn numpad_source_rect_with_size(
+    source: SourceRect,
+    size: Size,
+    compact_crop: bool,
+) -> Rectangle {
+    let origin = photo_rect(
+        size,
+        compact_crop,
+        NUMPAD_X,
+        NUMPAD_Y,
+        0.0,
+        0.0,
+    );
+    let opening = photo_rect(
+        size,
+        compact_crop,
+        NUMPAD_X,
+        NUMPAD_Y,
+        NUMPAD_W,
+        NUMPAD_H,
+    );
+    let x_scale = opening.width / key_geometry::NUMPAD_SOURCE_SIZE.0;
+    let y_scale = opening.height / key_geometry::NUMPAD_SOURCE_SIZE.1;
+    Rectangle {
+        x: origin.x + source.x * x_scale,
+        y: origin.y + source.y * y_scale,
+        width: source.width * x_scale,
+        height: source.height * y_scale,
+    }
+}
+
+fn numpad_text_bounds_with_size(
+    key: &Key,
+    size: Size,
+    compact_crop: bool,
+) -> Option<Rectangle> {
+    let TextGuide::Bounds(bounds) = key_geometry::numpad_text_guide(
+        (key.col - 19.0).round() as usize,
+        key.row.round() as usize,
+    )?
+    else {
+        return None;
+    };
+    Some(numpad_source_rect_with_size(bounds, size, compact_crop))
 }
 
 fn fill_text_with_bounds(frame: &mut Frame, mut text: Text, bounds: Option<Rectangle>) {
@@ -1171,9 +1250,10 @@ fn draw_board_overlay(
         let press_offset = lit_track
             .map(|_| (rect.height * 0.055).clamp(1.0, 4.0))
             .unwrap_or(0.0);
-        let mut sprite_rect = key_sprite_rect_with_size(key, size, compact_crop);
+        let mut sprite_rect =
+            key_sprite_rect_with_size(key, size, compact_crop, show_drum_symbols);
         sprite_rect.y += press_offset;
-        if let Some(sprite) = photo_assets.key_sprite(key, lit_track) {
+        if let Some(sprite) = photo_assets.key_sprite(key, lit_track, show_drum_symbols) {
             frame.draw_image(sprite_rect, &sprite);
         }
         let visual_rect = Rectangle {
@@ -1191,9 +1271,19 @@ fn draw_board_overlay(
         let projected_label = projected_labels.and_then(|labels| labels.get(&key.id));
 
         if let Some(note) = drum_note {
+            let label_rect = if matches!(key.cluster, Cluster::Numpad) {
+                if let Some(mut bounds) = numpad_text_bounds_with_size(key, size, compact_crop) {
+                    bounds.y += press_offset;
+                    bounds
+                } else {
+                    visual_rect
+                }
+            } else {
+                visual_rect
+            };
             draw_drum_symbol(
                 frame,
-                visual_rect,
+                label_rect,
                 note,
                 text_color,
                 projected_label.map(String::as_str),
@@ -1675,27 +1765,35 @@ fn draw_drum_symbol(
     }
 
     if let Some(key) = computer_key {
-        frame.fill_text(Text {
-            content: key.to_string(),
-            position: Point::new(rect.x + 5.0, cap_top + 4.0),
-            color: Color { a: 0.58, ..color },
-            size: iced::Pixels(7.0),
-            font: CANVAS_FONT,
-            align_x: Horizontal::Left.into(),
-            ..Text::default()
-        });
+        fill_text_with_bounds(
+            frame,
+            Text {
+                content: key.to_string(),
+                position: Point::new(rect.x + 5.0, cap_top + 4.0),
+                color: Color { a: 0.58, ..color },
+                size: iced::Pixels(7.0),
+                font: CANVAS_FONT,
+                align_x: Horizontal::Left.into(),
+                ..Text::default()
+            },
+            Some(rect),
+        );
     }
 
-    frame.fill_text(Text {
-        content: name.to_string(),
-        position: Point::new(rect.x + rect.width / 2.0, rect.y + rect.height * 0.90),
-        color,
-        size: iced::Pixels(if name.len() > 8 { 7.0 } else { 8.0 }),
-        font: CANVAS_FONT,
-        align_x: Horizontal::Center.into(),
-        align_y: Vertical::Center,
-        ..Text::default()
-    });
+    fill_text_with_bounds(
+        frame,
+        Text {
+            content: name.to_string(),
+            position: Point::new(rect.x + rect.width / 2.0, rect.y + rect.height * 0.90),
+            color,
+            size: iced::Pixels(if name.len() > 8 { 7.0 } else { 8.0 }),
+            font: CANVAS_FONT,
+            align_x: Horizontal::Center.into(),
+            align_y: Vertical::Center,
+            ..Text::default()
+        },
+        Some(rect),
+    );
 }
 
 /// Draws a compact, high-contrast sequence badge in the key's upper-right
@@ -1913,6 +2011,20 @@ mod tests {
                 assert_eq!(&bytes[8..12], b"WEBP");
             }
         }
+    }
+
+    #[test]
+    fn every_drum_key_has_every_blank_cap_variant() {
+        for key_id in 94..114 {
+            for variant in 0..11 {
+                let bytes = preprocessed_drum_key_sprite(key_id, variant)
+                    .expect("every drum key must have every blank-cap variant");
+                assert!(bytes.starts_with(b"RIFF"));
+                assert_eq!(&bytes[8..12], b"WEBP");
+            }
+        }
+        assert!(preprocessed_drum_key_sprite(93, 0).is_none());
+        assert!(preprocessed_drum_key_sprite(114, 0).is_none());
     }
 
     #[test]

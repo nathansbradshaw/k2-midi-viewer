@@ -198,11 +198,17 @@ Active keys only select a cached prebuilt handle and apply a small downward
 travel; no flood fill or per-pixel colour work runs during playback. The old
 row strips are no longer visible beneath those sprites.
 
-The alpha-row crops and hit bounds now use the measured red separators from the
-annotated row copies in `src/key_geometry.rs`. Each crop contains its target
-key's photographed side bevel, so build-time colour replacement recolours that
-bevel completely; preserving an old-colour strip at the left edge is no longer
+The alpha-row and numpad crops and hit bounds now use the measured red
+separators from their annotated copies in `src/key_geometry.rs`. Numpad drum
+labels also use its yellow safe-text boxes. Each crop contains its target key's
+photographed side bevel, so build-time colour replacement recolours that bevel
+completely; preserving an old-colour strip at the left edge is no longer
 necessary on annotated rows.
+
+Drum-symbol mode uses separately isolated, pre-colourized blank caps from
+`numpad-clean.png`. Normal numpad mode continues to use `numpad.png`, preserving
+the photographed computer-key legends; switching modes never paints over or
+erases those legends at runtime.
 
 Tape ink is rendered from the centralized manifest in `src/render.rs` using the
 bundled Permanent Marker font. Board hardware, labels, key sprites, knobs, hit
