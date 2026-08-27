@@ -46,6 +46,22 @@ Firefox uses a stricter permission flow: connect the MIDI device before starting
 Firefox, then approve the site-specific MIDI permission add-on when prompted.
 Firefox for Android does not support Web MIDI.
 
+## Planned key-image annotations
+
+As future asset work, create annotated copies of the key images so their geometry
+can be extracted precisely. Keep the originals unchanged and preserve the exact
+image dimensions. On each annotated copy:
+
+- Draw every key boundary in solid red, including unambiguous borders where keys
+  touch.
+- Mark the preferred center for key-label text with a small purple dot or cross.
+- Use opaque, non-antialiased marks when possible so the colors are easy to detect
+  programmatically.
+- Name the copy after the original with an `_annotated` suffix.
+
+These annotations can later be converted into key-boundary polygons and text
+coordinates.
+
 ## GitHub Pages
 
 Pushing `main` runs [the Pages workflow](.github/workflows/pages.yml), builds the

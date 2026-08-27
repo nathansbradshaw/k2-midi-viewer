@@ -27,17 +27,22 @@ use iced::{
 use key::{Cluster, Key, KeyId};
 use layout::build_layout;
 use playback::{PlayCmd, PlayEvent, PlaybackHandle};
-use render::BoardCanvas;
+use render::{BoardCanvas, PhotoBoardAssets};
 use staff::StaffCanvas;
 
 const SEEK_STEP: f32 = 0.0001;
 
-const APP_BG: Color = Color::from_rgb(0.035, 0.035, 0.075);
-const PANEL_BG: Color = Color::from_rgb(0.075, 0.065, 0.125);
-const PANEL_BORDER: Color = Color::from_rgb(0.25, 0.17, 0.32);
-const TEXT_MAIN: Color = Color::from_rgb(0.95, 0.86, 0.72);
-const TEXT_MUTED: Color = Color::from_rgb(0.63, 0.53, 0.68);
-const ACCENT: Color = Color::from_rgb(0.96, 0.34, 0.42);
+// Styled after the workshop-built instrument itself: warm black metal,
+// aged paper labels, olive keys, and the salmon arrow cluster.
+const APP_BG: Color = Color::from_rgb(0.045, 0.050, 0.043);
+const PANEL_BG: Color = Color::from_rgb(0.105, 0.110, 0.095);
+const PANEL_BORDER: Color = Color::from_rgb(0.285, 0.285, 0.235);
+const TEXT_MAIN: Color = Color::from_rgb(0.925, 0.895, 0.800);
+const TEXT_MUTED: Color = Color::from_rgb(0.620, 0.605, 0.535);
+const ACCENT: Color = Color::from_rgb(0.830, 0.405, 0.330);
+const MANUAL_BG: Color = Color::from_rgb(0.052, 0.064, 0.060);
+const MANUAL_INK: Color = Color::from_rgb(0.845, 0.830, 0.715);
+const MANUAL_MUTED: Color = Color::from_rgb(0.570, 0.590, 0.525);
 
 fn app_theme() -> Theme {
     Theme::custom(
@@ -73,12 +78,12 @@ fn panel_style(_: &Theme) -> container::Style {
         border: Border {
             color: PANEL_BORDER,
             width: 1.0,
-            radius: 10.0.into(),
+            radius: 4.0.into(),
         },
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.28),
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 8.0,
+            offset: Vector::new(0.0, 3.0),
+            blur_radius: 0.0,
         },
         ..Default::default()
     }
@@ -87,20 +92,20 @@ fn panel_style(_: &Theme) -> container::Style {
 fn control_style(_: &Theme, status: button::Status) -> button::Style {
     let (background, text_color, border_color) = match status {
         button::Status::Active => (
-            Color::from_rgb(0.13, 0.105, 0.18),
+            Color::from_rgb(0.155, 0.160, 0.135),
             TEXT_MAIN,
-            Color::from_rgb(0.32, 0.22, 0.40),
+            Color::from_rgb(0.355, 0.350, 0.285),
         ),
         button::Status::Hovered => (
-            Color::from_rgb(0.24, 0.14, 0.30),
+            Color::from_rgb(0.225, 0.225, 0.180),
             Color::WHITE,
-            Color::from_rgb(0.54, 0.29, 0.53),
+            Color::from_rgb(0.520, 0.495, 0.385),
         ),
-        button::Status::Pressed => (Color::from_rgb(0.075, 0.06, 0.12), TEXT_MAIN, ACCENT),
+        button::Status::Pressed => (Color::from_rgb(0.080, 0.085, 0.070), TEXT_MAIN, ACCENT),
         button::Status::Disabled => (
-            Color::from_rgb(0.085, 0.075, 0.12),
+            Color::from_rgb(0.095, 0.100, 0.085),
             TEXT_MUTED,
-            Color::from_rgb(0.16, 0.12, 0.20),
+            Color::from_rgb(0.180, 0.180, 0.150),
         ),
     };
     button::Style {
@@ -109,7 +114,7 @@ fn control_style(_: &Theme, status: button::Status) -> button::Style {
         border: Border {
             color: border_color,
             width: 1.0,
-            radius: 7.0.into(),
+            radius: 3.0.into(),
         },
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
@@ -118,10 +123,10 @@ fn control_style(_: &Theme, status: button::Status) -> button::Style {
                 if status == button::Status::Pressed {
                     0.0
                 } else {
-                    1.0
+                    3.0
                 },
             ),
-            blur_radius: 2.0,
+            blur_radius: 0.0,
         },
         snap: false,
     }
@@ -169,14 +174,14 @@ fn track_octave_options() -> Vec<TrackOctaveOption> {
 fn channel_pick_list_style(_: &Theme, status: pick_list::Status) -> pick_list::Style {
     let (background, border_color) = match status {
         pick_list::Status::Active => (
-            Color::from_rgb(0.13, 0.105, 0.18),
-            Color::from_rgb(0.32, 0.22, 0.40),
+            Color::from_rgb(0.155, 0.160, 0.135),
+            Color::from_rgb(0.355, 0.350, 0.285),
         ),
         pick_list::Status::Hovered => (
-            Color::from_rgb(0.24, 0.14, 0.30),
-            Color::from_rgb(0.54, 0.29, 0.53),
+            Color::from_rgb(0.225, 0.225, 0.180),
+            Color::from_rgb(0.520, 0.495, 0.385),
         ),
-        pick_list::Status::Opened { .. } => (Color::from_rgb(0.075, 0.06, 0.12), ACCENT),
+        pick_list::Status::Opened { .. } => (Color::from_rgb(0.080, 0.085, 0.070), ACCENT),
     };
     pick_list::Style {
         text_color: TEXT_MAIN,
@@ -186,16 +191,16 @@ fn channel_pick_list_style(_: &Theme, status: pick_list::Status) -> pick_list::S
         border: Border {
             color: border_color,
             width: 1.0,
-            radius: 7.0.into(),
+            radius: 3.0.into(),
         },
     }
 }
 
 fn accent_style(_: &Theme, status: button::Status) -> button::Style {
     let background = match status {
-        button::Status::Hovered => Color::from_rgb(1.0, 0.45, 0.48),
-        button::Status::Pressed => Color::from_rgb(0.70, 0.18, 0.31),
-        button::Status::Disabled => Color::from_rgb(0.24, 0.13, 0.20),
+        button::Status::Hovered => Color::from_rgb(0.920, 0.480, 0.390),
+        button::Status::Pressed => Color::from_rgb(0.610, 0.280, 0.230),
+        button::Status::Disabled => Color::from_rgb(0.210, 0.150, 0.125),
         button::Status::Active => ACCENT,
     };
     button::Style {
@@ -208,12 +213,12 @@ fn accent_style(_: &Theme, status: button::Status) -> button::Style {
         border: Border {
             color: Color::from_rgb(1.0, 0.53, 0.45),
             width: 1.0,
-            radius: 7.0.into(),
+            radius: 3.0.into(),
         },
         shadow: Shadow {
             color: Color::from_rgba(1.0, 0.20, 0.42, 0.28),
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 6.0,
+            offset: Vector::new(0.0, 3.0),
+            blur_radius: 0.0,
         },
         snap: false,
     }
@@ -235,7 +240,7 @@ fn toggled_style(_: &Theme, status: button::Status) -> button::Style {
         border: Border {
             color: ACCENT,
             width: 1.0,
-            radius: 7.0.into(),
+            radius: 3.0.into(),
         },
         shadow: Shadow::default(),
         snap: false,
@@ -249,6 +254,7 @@ fn main() -> iced::Result {
     let app = iced::application(App::default, App::update, App::view)
         .title("K2 MIDI Viewer")
         .theme(app_theme_for)
+        .font(include_bytes!("../assets/fonts/PermanentMarker-Regular.ttf").as_slice())
         .subscription(App::subscription);
     #[cfg(not(target_arch = "wasm32"))]
     let app = app.window(iced::window::Settings {
@@ -412,6 +418,7 @@ impl KeyPickMode {
 
 struct App {
     window_size: Size,
+    photo_assets: PhotoBoardAssets,
 
     // keyboard
     keys: Vec<Key>,
@@ -433,6 +440,8 @@ struct App {
     pressed_keys: HashSet<KeyId>,
     keyboard_hits_enabled: bool,
     drum_symbols_enabled: bool,
+    compact_keyboard: bool,
+    manual_open: bool,
     computer_keys_down: HashMap<ComputerKey, Vec<KeyId>>,
     computer_key_labels: HashMap<KeyId, String>,
     knob_values: [f32; synth::KNOB_COUNT], // 0.0..=1.0 dial position per knob
@@ -545,6 +554,7 @@ impl Default for App {
 
         let mut app = App {
             window_size: Size::new(1520.0, 900.0),
+            photo_assets: PhotoBoardAssets::new(),
 
             keyboard_notes: layout.keyboard_notes,
             keyboard_notes_sorted,
@@ -558,6 +568,8 @@ impl Default for App {
             pressed_keys: HashSet::new(),
             keyboard_hits_enabled: false,
             drum_symbols_enabled: false,
+            compact_keyboard: false,
+            manual_open: false,
             computer_keys_down: HashMap::new(),
             computer_key_labels,
             live_octave: 0,
@@ -644,6 +656,8 @@ pub enum Message {
     KnobChanged(u8, f32), // knob index, 0.0..=1.0 dial position
     ToggleKeyboardHits,
     ToggleDrumSymbols,
+    ToggleCompactKeyboard,
+    ToggleManual,
     ComputerKeyPressed(ComputerKey),
     ComputerKeyReleased(ComputerKey),
     ReleaseComputerKeys,
@@ -886,7 +900,7 @@ fn computer_projection_labels(keys: &[Key]) -> HashMap<KeyId, String> {
     };
 
     for (index, label) in [
-        "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "⌫",
+        "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "BKSP",
     ]
     .iter()
     .enumerate()
@@ -943,7 +957,7 @@ fn computer_projection_labels(keys: &[Key]) -> HashMap<KeyId, String> {
         .collect();
     numpad.sort_by(|a, b| a.row.total_cmp(&b.row).then(a.col.total_cmp(&b.col)));
     for (key, label) in numpad.into_iter().zip([
-        "NUM", "/", "*", "−", "7", "8", "9", "+", "4", "5", "6", "+", "1", "2", "3", "ENTER", "0",
+        "NUM", "/", "*", "-", "7", "8", "9", "+", "4", "5", "6", "+", "1", "2", "3", "ENTER", "0",
         "0", ".", "ENTER",
     ]) {
         labels.insert(key.id, label.to_string());
@@ -1809,6 +1823,17 @@ impl App {
                 Task::none()
             }
 
+            Message::ToggleCompactKeyboard => {
+                self.compact_keyboard = !self.compact_keyboard;
+                self.sync_url();
+                Task::none()
+            }
+
+            Message::ToggleManual => {
+                self.manual_open = !self.manual_open;
+                Task::none()
+            }
+
             Message::ComputerKeyPressed(key) => {
                 if self.keyboard_hits_enabled && !self.computer_keys_down.contains_key(&key) {
                     #[cfg(target_arch = "wasm32")]
@@ -2541,7 +2566,7 @@ impl App {
 
         let identity = column![
             text("K2").size(24).color(TEXT_MAIN),
-            text("MIDI PERFORMANCE VIEWER").size(10).color(TEXT_MUTED),
+            text("LEXMARK INSTRUMENT / MIDI VIEWER").size(10).color(TEXT_MUTED),
         ]
         .spacing(0)
         .width(Length::Fill);
@@ -2583,15 +2608,61 @@ impl App {
             })
             .on_press(Message::ToggleDrumSymbols);
 
-        let header_bottom = row![
-            container(meta).width(Length::Fill),
-            pitch_controls,
-            all_notes_btn,
-            keyboard_hits_btn,
-            drum_symbols_btn,
-        ]
-        .spacing(row_gap)
-        .align_y(Alignment::Center);
+        let compact_keyboard_label = if self.compact_keyboard {
+            "Compact board: on"
+        } else {
+            "Compact board"
+        };
+        let compact_keyboard_btn = button(compact_keyboard_label)
+            .padding([8, 12])
+            .style(if self.compact_keyboard {
+                toggled_style
+            } else {
+                control_style
+            })
+            .on_press(Message::ToggleCompactKeyboard);
+
+        let manual_btn: Element<Message> = if has_file {
+            row![].into()
+        } else {
+            button(if self.manual_open { "Close manual" } else { "Field manual" })
+                .padding([8, 12])
+                .style(if self.manual_open { toggled_style } else { control_style })
+                .on_press(Message::ToggleManual)
+                .into()
+        };
+
+        let header_bottom: Element<Message> = if self.window_size.width < 1180.0 {
+            column![
+                row![container(meta).width(Length::Fill), pitch_controls]
+                    .spacing(row_gap)
+                    .align_y(Alignment::Center),
+                row![
+                    all_notes_btn,
+                    keyboard_hits_btn,
+                    drum_symbols_btn,
+                    compact_keyboard_btn,
+                    manual_btn,
+                ]
+                .spacing(row_gap)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(row_gap)
+            .into()
+        } else {
+            row![
+                container(meta).width(Length::Fill),
+                pitch_controls,
+                all_notes_btn,
+                keyboard_hits_btn,
+                drum_symbols_btn,
+                compact_keyboard_btn,
+                manual_btn,
+            ]
+            .spacing(row_gap)
+            .align_y(Alignment::Center)
+            .into()
+        };
         let file_row = container(column![header_top, header_bottom].spacing(row_gap))
             .padding([panel_v, panel_h])
             .style(panel_style);
@@ -2704,6 +2775,7 @@ impl App {
 
         let transport_row = container(
             row![
+                text("TRANSPORT").size(9).color(TEXT_MUTED),
                 play_pause_btn,
                 stop_btn,
                 looper_btn,
@@ -2809,6 +2881,7 @@ impl App {
         let overlay_highlighted = None;
 
         let keyboard = Canvas::new(BoardCanvas {
+            photo_assets: &self.photo_assets,
             keys: &self.keys,
             highlighted: highlighted_ref,
             overlay_highlighted,
@@ -2826,7 +2899,29 @@ impl App {
             knob_values: &self.knob_values,
         })
         .width(Length::Fill)
-        .height(390.0);
+        .height({
+            // The canvas may have more room than the photograph, but the renderer
+            // always uses a single contain transform. This keeps the 1949×807 shell
+            // from stretching while compact mode returns useful room to the staff.
+            const BOARD_ASPECT: f32 = 1949.0 / 807.0;
+            let width_limited = (self.window_size.width - outer_pad * 2.0) / BOARD_ASPECT;
+            let chrome_reserve = if track_row.is_some() { 225.0 } else { 175.0 }
+                + if self.window_size.width < 1180.0 { 42.0 } else { 0.0 };
+            let staff_reserve = if has_file {
+                if self.compact_keyboard || self.window_size.width < 1180.0 { 155.0 } else { 215.0 }
+            } else if self.compact_keyboard {
+                90.0
+            } else {
+                145.0
+            };
+            let height_limited = (self.window_size.height
+                - chrome_reserve
+                - staff_reserve
+                - outer_pad * 2.0)
+                .max(210.0);
+            let mode_cap = if self.compact_keyboard { 355.0 } else { 620.0 };
+            width_limited.min(height_limited).min(mode_cap).max(190.0)
+        });
 
         // ── Staff canvas (or, with nothing loaded, usage instructions) ──────
         let staff: Element<Message> = if has_file {
@@ -2843,8 +2938,10 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
-        } else {
+        } else if self.manual_open {
             instructions_panel(panel_v, panel_h, row_gap)
+        } else {
+            collapsed_manual(panel_v, panel_h)
         };
 
         // ── Selection info ────────────────────────────────────────────────
@@ -2886,61 +2983,61 @@ impl App {
 /// Fills the staff area with usage instructions while no file is loaded —
 /// otherwise that space is just an empty "Load a MIDI file" placeholder.
 fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'static, Message> {
-    let heading = |t: &'static str| text(t).size(13).color(TEXT_MAIN);
-    let body = |t: &'static str| text(t).size(12).color(TEXT_MUTED);
+    let heading = |t: &'static str| text(t).size(12).color(MANUAL_INK);
+    let body = |t: &'static str| text(t).size(12).color(MANUAL_MUTED);
 
     let sections: [(&str, &str); 9] = [
         (
-            "Getting started",
+            "01 / GETTING STARTED",
             "Click \"Open MIDI\" to load a .mid file, then use Play / Pause / Stop or drag \
              the scrubber to move through it.",
         ),
         (
-            "PITCH",
+            "02 / PITCH MAP",
             "− / + nudge the song by a semitone or octave (toggle which with the ST/OCT \
              button); Reset returns to the automatic best-fit offset. The \"Rows\" button \
              picks which key lights up when a note repeats across the keyboard's overlapping \
              rows: L/R, U/D, or Closest (shortest total travel).",
         ),
         (
-            "All notes",
+            "03 / ALL NOTES",
             "Overlays every note in the file on the keyboard at once, instead of only \
              whatever is currently playing.",
         ),
         (
-            "Tracks",
+            "04 / TRACKS",
             "Mute or unmute individual tracks once a file is loaded — each track's color \
              matches its notes on the keyboard and staff.",
         ),
         (
-            "Computer keys",
+            "05 / COMPUTER KEYS",
             "Toggles the ability to play the keyboard by typing on your physical computer \
              keyboard.",
         ),
         (
-            "Drum symbols",
+            "06 / DRUM SYMBOLS",
             "Shows the GM percussion instrument assigned to each drum pad. Turn it off to \
              restore the pad's numpad legends.",
         ),
         (
-            "Looper",
+            "07 / LOOPER",
             "Automatically restarts the loaded MIDI file when playback reaches the end.",
         ),
         (
-            "Sound / MIDI OUT",
+            "08 / SOUND + MIDI OUT",
             "\"Sound on\" mutes the built-in synth or selected MIDI output. In Chrome \
              or desktop Firefox, use Connect MIDI, then cycle the separate MIDI IN and \
              MIDI OUT selectors.",
         ),
         (
-            "Staff view",
+            "09 / STAFF VIEW",
             "Once a file is loaded, this area shows scrolling staff notation — drag across \
              it to inspect the notes in a time range.",
         ),
     ];
 
     let mut col =
-        column![text("How to use K2 MIDI Viewer").size(16).color(TEXT_MAIN)].spacing(row_gap * 1.5);
+        column![text("K2 FIELD MANUAL").size(17).color(MANUAL_INK)].spacing(row_gap * 1.5);
 
     for (h, b) in sections {
         col = col.push(column![heading(h), body(b)].spacing(2));
@@ -2950,8 +3047,59 @@ fn instructions_panel(panel_v: f32, panel_h: f32, row_gap: f32) -> Element<'stat
         .padding([panel_v, panel_h])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(panel_style)
+        .style(|_| container::Style {
+            background: Some(Background::Color(MANUAL_BG)),
+            border: Border {
+                color: Color::from_rgb(0.240, 0.265, 0.225),
+                width: 1.0,
+                radius: 2.0.into(),
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+                offset: Vector::new(0.0, 3.0),
+                blur_radius: 0.0,
+            },
+            ..Default::default()
+        })
         .into()
+}
+
+fn collapsed_manual(panel_v: f32, panel_h: f32) -> Element<'static, Message> {
+    container(
+        row![
+            column![
+                text("K2 SERVICE NOTES").size(12).color(MANUAL_INK),
+                text("Open a MIDI file to begin, or open the field manual for controls and routing.")
+                    .size(11)
+                    .color(MANUAL_MUTED),
+            ]
+            .spacing(3)
+            .width(Length::Fill),
+            button("OPEN MANUAL")
+                .padding([7, 10])
+                .style(control_style)
+                .on_press(Message::ToggleManual),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    )
+    .padding([panel_v, panel_h])
+    .width(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Background::Color(MANUAL_BG)),
+        border: Border {
+            color: Color::from_rgb(0.240, 0.265, 0.225),
+            width: 1.0,
+            radius: 2.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+            offset: Vector::new(0.0, 3.0),
+            blur_radius: 0.0,
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 // ---------------------------------------------------------------------------
@@ -3043,6 +3191,9 @@ mod url_state {
         if let Some(&v) = pairs.get("drum_symbols") {
             app.drum_symbols_enabled = v != "0";
         }
+        if let Some(&v) = pairs.get("compact") {
+            app.compact_keyboard = v != "0";
+        }
         if let Some(&v) = pairs.get("loop") {
             app.looper_enabled = v != "0";
         }
@@ -3108,6 +3259,9 @@ mod url_state {
         }
         if app.drum_symbols_enabled {
             params.push("drum_symbols=1".to_string());
+        }
+        if app.compact_keyboard {
+            params.push("compact=1".to_string());
         }
         if app.looper_enabled {
             params.push("loop=1".to_string());

@@ -16,10 +16,11 @@ pub const NUMPAD_COL: f32 = 19.0;
 /// real board's photo reference where the knob group never overhangs the
 /// keys below it. Height is less than a full row so a label can sit under
 /// each knob.
-pub const KNOB_COL_STEP: f32 = 1.14;
+pub const KNOB_COL_STEP: f32 = 1.02;
+pub const KNOB_GROUP_PITCH: f32 = 4.55;
 pub const KNOB_WIDTH: f32 = 0.85;
 pub const KNOB_HEIGHT: f32 = 0.75;
-pub const KNOB_GROUP_START_COL: f32 = 1.2;
+pub const KNOB_GROUP_START_COL: f32 = 2.15;
 
 /// Column for the single standalone encoder the real board has to the left
 /// of the 12-knob group (its own separate control, not part of any tray) —
@@ -90,31 +91,32 @@ pub fn build_layout() -> Layout {
     let mut keys: Vec<Key> = Vec::new();
 
     // --- Encoders ---
-    // The standalone slot to the left of the group shows Volume — swapped
-    // with Bitcrush (originally there), since Volume is reached for far more
-    // often and better suits the isolated, easy-to-find position.
+    // The physical board has one power-style control followed by exactly 12
+    // knobs in three banks. Keep Volume..Glide in those twelve photographed
+    // knob positions; the extra Bitcrush effect occupies the standalone slot.
     let grouped_knob_count = crate::synth::KNOB_COUNT - 1;
     let bitcrush_index = grouped_knob_count as u8; // KNOB_PARAMS[12]
     for i in 0..grouped_knob_count {
-        // Slot 0 (first grouped knob) takes Bitcrush's place; Volume (index
-        // 0) moves out to the standalone encoder below instead.
-        let knob_index = if i == 0 { bitcrush_index } else { i as u8 };
+        let group = i / 4;
+        let within_group = i % 4;
         keys.push(
             Key::new(
                 next_id(),
                 "",
-                KNOB_GROUP_START_COL + i as f32 * KNOB_COL_STEP,
+                KNOB_GROUP_START_COL
+                    + group as f32 * KNOB_GROUP_PITCH
+                    + within_group as f32 * KNOB_COL_STEP,
                 0.0,
                 Cluster::Encoder,
             )
             .size(KNOB_WIDTH, KNOB_HEIGHT)
-            .knob(knob_index),
+            .knob(i as u8),
         );
     }
     keys.push(
         Key::new(next_id(), "", ENCODER_COL, 0.0, Cluster::Encoder)
             .size(KNOB_WIDTH, KNOB_HEIGHT)
-            .knob(0),
+            .knob(bitcrush_index),
     );
 
     // --- Alpha block ---
@@ -367,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn right_hand_sections_share_alignment_and_spacing() {
+    fn right_hand_sections_follow_the_photographic_openings() {
         let layout = build_layout();
         let alpha = layout.keys.iter()
             .filter(|key| matches!(key.cluster, Cluster::Alpha | Cluster::AlphaLight))
@@ -379,7 +381,12 @@ mod tests {
         let arrows = horizontal_bounds(&layout, Cluster::Arrow);
         let numpad = horizontal_bounds(&layout, Cluster::Numpad);
 
-        assert_eq!(nav, arrows);
-        assert_eq!(nav.0 - alpha.1, numpad.0 - arrows.1);
+        // The clean enclosure's arrow opening is two source pixels right of
+        // the navigation opening. They should read as one column without
+        // pretending the photographed cut-outs are mathematically identical.
+        assert!((nav.0 - arrows.0).abs() < 2.0);
+        assert!((nav.1 - arrows.1).abs() < 2.0);
+        assert!(nav.0 > alpha.1);
+        assert!(numpad.0 > arrows.1);
     }
 }

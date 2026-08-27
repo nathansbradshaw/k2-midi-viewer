@@ -403,51 +403,79 @@ fn draw_staff(
     draw_treble_clef(frame, slot_y(4), clef_col);
 
     // ── Notes ───────────────────────────────────────────────────────────────
+    // Notes are sorted chronologically by start tick, but a concurrent chord
+    // or an overlapping sustained note from another track can start a tick
+    // later while still needing its head/ring drawn *above* an earlier note's
+    // long duration bar. Drawing each note's whole stack (bar → head → ring →
+    // stem) atomically in start-tick order let a later note's wide bar paint
+    // over an earlier note's head. Instead, collect the visible notes once and
+    // draw every bar first (background), then every head/ring/stem/sharp on
+    // top (foreground) — with the currently-active notes drawn last within
+    // that foreground pass, so the note actually playing is never buried
+    // under a merely-nearby one.
     let vis_start = pos.saturating_sub(((BEHIND_BEATS + 1.0) * tpb) as u64);
     let vis_end   = pos + ((AHEAD_BEATS + 1.0) * tpb) as u64;
     let note_r    = HALF_SPACE * 0.82; // note-head radius
 
-    for note in &f.notes {
-        if note.start_tick > vis_end || note.end_tick < vis_start { continue; }
-        if track_muted.get(note.track).copied().unwrap_or(false)  { continue; }
+    struct Plotted<'n> {
+        note:      &'n Note,
+        x:         f32,
+        y:         f32,
+        slot:      i32,
+        shifted:   u8,
+        is_active: bool,
+        is_past:   bool,
+        fits:      bool,
+        col:       Color,
+    }
 
-        let shift = crate::midi::combined_octave_shift(octave_offset, track_octave, note.track);
-        let shifted = (note.midi_note as i16 + shift).clamp(0, 127) as u8;
-        let slot = staff_slot(shifted);
-        let x    = tick_x(note.start_tick);
-        let y    = slot_y(slot);
+    let mut plotted: Vec<Plotted> = f.notes.iter()
+        .filter(|note| !(note.start_tick > vis_end || note.end_tick < vis_start))
+        .filter(|note| !track_muted.get(note.track).copied().unwrap_or(false))
+        .filter_map(|note| {
+            let shift = crate::midi::combined_octave_shift(octave_offset, track_octave, note.track);
+            let shifted = (note.midi_note as i16 + shift).clamp(0, 127) as u8;
+            let slot = staff_slot(shifted);
+            let x = tick_x(note.start_tick);
+            let y = slot_y(slot);
+            if x < CLEF_WIDTH - 24.0 || x > w + 16.0 { return None; }
 
-        if x < CLEF_WIDTH - 24.0 || x > w + 16.0 { continue; }
+            let is_active = note.start_tick <= pos && pos < note.end_tick;
+            let is_past   = note.end_tick   <= pos;
+            Some(Plotted {
+                note, x, y, slot, shifted, is_active, is_past,
+                fits: note_fits(note, keyboard_notes, drum_note_to_key, octave_offset, track_octave),
+                col: track_note_color(note.track, is_active, is_past),
+            })
+        })
+        .collect();
 
-        let is_active = note.start_tick <= pos && pos < note.end_tick;
-        let is_past   = note.end_tick   <= pos;
-
-        let fits = note_fits(note, keyboard_notes, drum_note_to_key, octave_offset, track_octave);
-        let note_col = track_note_color(note.track, is_active, is_past);
-
-        // Duration bar — a thin semi-transparent strip showing note length
-        let end_x = tick_x(note.end_tick).min(w);
-        if end_x > x + note_r {
-            let alpha = if is_active { 0.42f32 } else if is_past { 0.16 } else { 0.18 };
+    // Background pass: duration bars and ledger lines for every note.
+    for p in &plotted {
+        let end_x = tick_x(p.note.end_tick).min(w);
+        if end_x > p.x + note_r {
+            let alpha = if p.is_active { 0.42f32 } else if p.is_past { 0.16 } else { 0.18 };
             frame.stroke(
-                &Path::line(Point::new(x, y), Point::new(end_x, y)),
+                &Path::line(Point::new(p.x, p.y), Point::new(end_x, p.y)),
                 canvas::Stroke::default()
-                    .with_color(Color { a: alpha, ..note_col })
+                    .with_color(Color { a: alpha, ..p.col })
                     .with_width(note_r * 1.7),
             );
         }
+        draw_ledgers(frame, p.slot, p.x, note_r, &slot_y, line_col);
+    }
 
-        // Ledger lines
-        draw_ledgers(frame, slot, x, note_r, &slot_y, line_col);
-
-        // Note head (filled circle)
-        frame.fill(&Path::circle(Point::new(x, y), note_r), note_col);
+    // Foreground pass: heads, warning rings, stems, and sharps — active notes
+    // last so the one actually sounding is always on top.
+    plotted.sort_by_key(|p| p.is_active);
+    for p in &plotted {
+        frame.fill(&Path::circle(Point::new(p.x, p.y), note_r), p.col);
 
         // Out-of-range warning ring — always drawn at full strength, independent
         // of the active/past dimming above, so it never fades into the background.
-        if !fits {
+        if !p.fits {
             frame.stroke(
-                &Path::circle(Point::new(x, y), note_r + 3.5),
+                &Path::circle(Point::new(p.x, p.y), note_r + 3.5),
                 canvas::Stroke::default()
                     .with_color(Color::from_rgba8(0xFF, 0x40, 0x30, 0.95))
                     .with_width(2.2),
@@ -455,20 +483,20 @@ fn draw_staff(
         }
 
         // Stem — up when below the staff's middle line (B4, slot 6), down when above.
-        let stem_up = slot < 6;
-        let sx = x + if stem_up { note_r * 0.85 } else { -note_r * 0.85 };
-        let sy = y + if stem_up { -3.5 * LINE_SPACING } else { 3.5 * LINE_SPACING };
+        let stem_up = p.slot < 6;
+        let sx = p.x + if stem_up { note_r * 0.85 } else { -note_r * 0.85 };
+        let sy = p.y + if stem_up { -3.5 * LINE_SPACING } else { 3.5 * LINE_SPACING };
         frame.stroke(
-            &Path::line(Point::new(sx, y), Point::new(sx, sy)),
-            canvas::Stroke::default().with_color(note_col).with_width(1.5),
+            &Path::line(Point::new(sx, p.y), Point::new(sx, sy)),
+            canvas::Stroke::default().with_color(p.col).with_width(1.5),
         );
 
         // Sharp accidental
-        if is_sharp(shifted) && !is_past {
+        if is_sharp(p.shifted) && !p.is_past {
             frame.fill_text(Text {
                 content: "#".to_string(),
-                position: Point::new(x - note_r * 2.8, y),
-                color: note_col,
+                position: Point::new(p.x - note_r * 2.8, p.y),
+                color: p.col,
                 size: iced::Pixels(11.0),
                 font: CANVAS_FONT,
                 align_x: Horizontal::Center.into(),
