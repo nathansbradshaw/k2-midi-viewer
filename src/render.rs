@@ -249,19 +249,19 @@ impl canvas::Program<Message> for BoardResizeHandle {
 
         frame.fill(
             &Path::rectangle(Point::ORIGIN, frame.size()),
-            rgb(0x0B, 0x0E, 0x0C),
+            rgb(0x11, 0x12, 0x0F),
         );
         frame.fill(
             &Path::rectangle(Point::new(0.0, 0.0), Size::new(width, 1.0)),
-            rgb(0x38, 0x3A, 0x30),
+            rgb(0x3A, 0x39, 0x2E),
         );
 
         let grip_width = (width * 0.16).clamp(72.0, 220.0);
         let grip_x = (width - grip_width) / 2.0;
         let grip_color = if active {
-            rgb(0xD4, 0x68, 0x54)
+            rgb(0xE9, 0x9B, 0x24)
         } else {
-            rgb(0x7A, 0x78, 0x65)
+            rgb(0x91, 0x8C, 0x7D)
         };
         for offset in [-2.5, 2.5] {
             frame.fill(
