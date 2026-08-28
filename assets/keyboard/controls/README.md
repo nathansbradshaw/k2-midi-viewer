@@ -18,6 +18,12 @@ the consuming UI.
 | `display-bezel.svg` | SVG, 960 × 280 viewBox | Stretchable molded-plastic frame with a transparent display opening. |
 | `transport-button-face.svg` | SVG, 180 × 112 viewBox | Empty raised transport keycap for separately layered glyphs. |
 | `label-plate.svg` | SVG, 600 × 104 viewBox | Optional recessed plate behind track or section labels. |
+| `transport-keycap.svg` | SVG, 180 × 112 viewBox | Next-generation blank molded transport key for Play, Stop, or Pause. |
+| `display-bezel-wide.svg` | SVG, 1200 × 300 viewBox | Shared wide frame for both the top LCD and lower visualizer. |
+| `lcd-glass-overlay-wide.svg` | SVG, 1200 × 240 viewBox | Restrained glass reflection sized for wide display apertures. |
+| `track-label-plate.svg` | SVG, 600 × 104 viewBox | Deeper inset plate dedicated to separately rendered track names. |
+| `led-jewel-unlit.png` | RGBA PNG, 1024 × 1024 | Low-gloss smoke-gray lens and black bezel in a true unlit state. |
+| `module-frame.svg` | SVG, 1200 × 240 viewBox | Stretchable low-contrast frame for header, transport, mixer, or visualizer modules. |
 
 ## State and color contract
 
@@ -36,9 +42,16 @@ the consuming UI.
 - `fader-track.svg` and `display-bezel.svg` also permit non-uniform horizontal
   scaling. Their strokes use non-scaling treatment where line weight matters.
 - Layer Play, Pause, Stop, and other glyphs separately above
-  `transport-button-face.svg`; the keycap intentionally contains no symbol.
+  `transport-keycap.svg`; the keycap intentionally contains no symbol.
 - The label plate is optional. A CSS inset background is equivalent where a
   raster/vector dependency would be unnecessary.
+- `display-bezel-wide.svg`, `lcd-glass-overlay-wide.svg`, and
+  `module-frame.svg` use `preserveAspectRatio="none"` so one product-family
+  asset can fit several responsive housings. Keep the bezel and frame corner
+  radii visually near their source proportions when resizing aggressively.
+- Use `led-jewel-unlit.png` as the preferred neutral base. Put colored light
+  inside the lens region with CSS/canvas and keep the hardware image above it;
+  do not hue-rotate the bezel.
 
 Example browser layering for the jewel:
 
@@ -65,7 +78,7 @@ Example browser layering for the jewel:
 }
 ```
 
-The three PNG surfaces were created with OpenAI's built-in image generator,
+The four photographic PNG surfaces were created with OpenAI's built-in image generator,
 then their low-alpha edge noise was removed and their transparent bounds were
 normalized. The switch pair, LCD overlay, and optional plate are project-native
 SVG so state alignment and opacity remain deterministic.

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 104" preserveAspectRatio="none" role="img" aria-labelledby="title desc">
+  <title id="title">Inset track label plate</title>
+  <desc id="desc">A blank recessed equipment plate for separately rendered track names.</desc>
+  <defs>
+    <linearGradient id="well" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#050604"/>
+      <stop offset=".18" stop-color="#10120e"/>
+      <stop offset=".7" stop-color="#1b1e18"/>
+      <stop offset="1" stop-color="#2a2c25"/>
+    </linearGradient>
+    <filter id="plate-shadow" x="-3%" y="-20%" width="106%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity=".66"/>
+    </filter>
+  </defs>
+  <rect x="5" y="7" width="590" height="90" rx="8" fill="#020302" fill-opacity=".8" filter="url(#plate-shadow)"/>
+  <rect x="9" y="11" width="582" height="82" rx="6" fill="url(#well)" stroke="#5d6055" stroke-opacity=".4" vector-effect="non-scaling-stroke"/>
+  <path d="M17 18H583" fill="none" stroke="#9a9d91" stroke-opacity=".15" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  <path d="M17 87H583" fill="none" stroke="#000" stroke-opacity=".54" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+</svg>

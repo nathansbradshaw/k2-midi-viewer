@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 240" preserveAspectRatio="none" role="img" aria-labelledby="title desc">
+  <title id="title">Wide LCD glass overlay</title>
+  <desc id="desc">A subtle transparent LCD pane with edge depth, restrained reflections, and minute surface wear.</desc>
+  <defs>
+    <clipPath id="glass-clip"><rect x="8" y="8" width="1184" height="224" rx="18"/></clipPath>
+  </defs>
+  <g clip-path="url(#glass-clip)">
+    <rect x="8" y="8" width="1184" height="224" rx="18" fill="#0b0d0c" fill-opacity=".026"/>
+    <path d="M-70 217 173 -18H244L1 217Z" fill="#fff" fill-opacity=".064"/>
+    <path d="M22 240 286 -16H315L50 240Z" fill="#fff" fill-opacity=".025"/>
+    <path d="M478 8H1023L930 91H389Z" fill="#fff" fill-opacity=".018"/>
+    <path d="M934 37 918 65M354 173l41-8M694 112l27 3" fill="none" stroke="#fff" stroke-opacity=".035" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  </g>
+  <rect x="8.75" y="8.75" width="1182.5" height="222.5" rx="17.25" fill="none" stroke="#050605" stroke-opacity=".5" stroke-width="3" vector-effect="non-scaling-stroke"/>
+  <rect x="13" y="13" width="1174" height="214" rx="14" fill="none" stroke="#f5f7ed" stroke-opacity=".115" vector-effect="non-scaling-stroke"/>
+  <rect x="18" y="18" width="1164" height="204" rx="11" fill="none" stroke="#090b09" stroke-opacity=".12" stroke-width="8" vector-effect="non-scaling-stroke"/>
+</svg>

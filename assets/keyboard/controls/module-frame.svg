@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 240" preserveAspectRatio="none" role="img" aria-labelledby="title desc">
+  <title id="title">Hardware module frame</title>
+  <desc id="desc">A restrained charcoal frame that separates control-surface modules while leaving their contents transparent.</desc>
+  <defs>
+    <linearGradient id="rail" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#42453f"/>
+      <stop offset=".18" stop-color="#282b26"/>
+      <stop offset=".82" stop-color="#171916"/>
+      <stop offset="1" stop-color="#090a08"/>
+    </linearGradient>
+  </defs>
+  <path d="M18 0H1182Q1200 0 1200 18V222Q1200 240 1182 240H18Q0 240 0 222V18Q0 0 18 0ZM25 18Q18 18 18 25V215Q18 222 25 222H1175Q1182 222 1182 215V25Q1182 18 1175 18Z" fill="url(#rail)" fill-rule="evenodd"/>
+  <rect x="4" y="4" width="1192" height="232" rx="14" fill="none" stroke="#8e9288" stroke-opacity=".22" stroke-width="2" vector-effect="non-scaling-stroke"/>
+  <path d="M21 11H1179" fill="none" stroke="#c6c9c0" stroke-opacity=".12" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  <path d="M21 229H1179" fill="none" stroke="#000" stroke-opacity=".7" stroke-width="3" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  <rect x="14" y="14" width="1172" height="212" rx="10" fill="none" stroke="#000" stroke-opacity=".6" stroke-width="5" vector-effect="non-scaling-stroke"/>
+</svg>

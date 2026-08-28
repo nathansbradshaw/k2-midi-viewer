@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 112" role="img" aria-labelledby="title desc">
+  <title id="title">Molded transport keycap</title>
+  <desc id="desc">A blank warm-gray plastic keycap for separately layered play, stop, or pause glyphs.</desc>
+  <rect x="8" y="14" width="164" height="90" rx="14" fill="#050604" fill-opacity=".58"/>
+  <rect x="9" y="10" width="162" height="90" rx="14" fill="#776e5b"/>
+  <rect x="10" y="8" width="160" height="87" rx="13" fill="#b7aa8e"/>
+  <rect x="13" y="10" width="154" height="81" rx="11" fill="#d3c6a6"/>
+  <rect x="17" y="14" width="146" height="72" rx="8" fill="#dbcead"/>
+  <rect x="16" y="13" width="148" height="75" rx="8.5" fill="none" stroke="#fff6d7" stroke-opacity=".48" stroke-width="2"/>
+  <path d="M22 17H158" fill="none" stroke="#fff9df" stroke-opacity=".62" stroke-width="2" stroke-linecap="round"/>
+  <path d="M20 84Q90 92 160 84" fill="none" stroke="#5b5445" stroke-opacity=".5" stroke-width="3" stroke-linecap="round"/>
+  <path d="M24 89H156" fill="none" stroke="#39352c" stroke-opacity=".33" stroke-linecap="round"/>
+</svg>

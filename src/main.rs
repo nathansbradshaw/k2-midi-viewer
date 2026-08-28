@@ -4234,9 +4234,17 @@ impl App {
         })
         .width(Length::Fill)
         .height(resize_handle_height);
-        let keyboard_region = container(column![keyboard, keyboard_resize].spacing(0))
-            .padding(CHROME_BEZEL)
-            .style(bezel_style);
+        let keyboard_region = container(
+            container(column![keyboard, keyboard_resize].spacing(0))
+                .padding(CHROME_BEZEL)
+                .style(bezel_style),
+        )
+        .padding(Padding {
+            top: 0.0,
+            right: outer_pad,
+            bottom: 0.0,
+            left: outer_pad,
+        });
 
         // ── Visualizer panel ──────────────────────────────────────────────
         // The complete housing remains mounted in the rack in every state;
@@ -4308,10 +4316,9 @@ impl App {
             row![].into()
         };
 
-        // The keyboard stage sits flush against the rails and the panels
-        // above/below it — no padding of its own — so the photographed board
-        // gets every pixel the layout can give it instead of floating in a
-        // dark margin. Padding lives on the sections above and below instead.
+        // The keyboard stage shares `outer_pad` as its left/right margin (see
+        // `keyboard_region` above) so its bezel lines up with the panels
+        // above and below it instead of sitting flush against the rails.
         let above_children: Vec<Element<Message>> =
             vec![file_row.into(), transport_row.into(), track_row.into()];
         let above_keyboard =

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" preserveAspectRatio="none" role="img" aria-labelledby="title desc">
+  <title id="title">Wide molded display bezel</title>
+  <desc id="desc">A reusable charcoal equipment bezel with a fully transparent display opening.</desc>
+  <defs>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#4b4e48"/>
+      <stop offset=".12" stop-color="#2c2f2a"/>
+      <stop offset=".58" stop-color="#1d1f1b"/>
+      <stop offset="1" stop-color="#090a08"/>
+    </linearGradient>
+    <filter id="bezel-shadow" x="-3%" y="-12%" width="106%" height="130%">
+      <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#000" flood-opacity=".56"/>
+    </filter>
+  </defs>
+  <path d="M40 13H1160Q1187 13 1187 40V260Q1187 287 1160 287H40Q13 287 13 260V40Q13 13 40 13ZM83 56Q68 56 68 72V228Q68 244 83 244H1117Q1132 244 1132 228V72Q1132 56 1117 56Z" fill="#000" fill-opacity=".64" fill-rule="evenodd" filter="url(#bezel-shadow)"/>
+  <path d="M40 9H1160Q1182 9 1182 31V252Q1182 274 1160 274H40Q18 274 18 252V31Q18 9 40 9ZM83 50Q62 50 62 71V222Q62 243 83 243H1117Q1138 243 1138 222V71Q1138 50 1117 50Z" fill="url(#bezel)" fill-rule="evenodd"/>
+  <rect x="24" y="15" width="1152" height="253" rx="19" fill="none" stroke="#a9ada4" stroke-opacity=".29" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+  <path d="M43 25H1157" fill="none" stroke="#d9dcd3" stroke-opacity=".17" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  <path d="M43 261H1157" fill="none" stroke="#000" stroke-opacity=".68" stroke-width="4" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+  <rect x="56" y="44" width="1088" height="205" rx="25" fill="none" stroke="#020302" stroke-width="13" stroke-opacity=".95" vector-effect="non-scaling-stroke"/>
+  <rect x="66" y="54" width="1068" height="185" rx="17" fill="none" stroke="#7c8077" stroke-opacity=".26" stroke-width="2" vector-effect="non-scaling-stroke"/>
+</svg>
