@@ -24,6 +24,14 @@ cargo install trunk --locked
 trunk serve
 ```
 
+`trunk serve` uses the LTO-optimized release profile by default so the browser
+does not have to compile the much larger debug WASM. During rapid code
+iteration, opt back into faster rebuilds explicitly:
+
+```sh
+trunk serve --release=false
+```
+
 Then open <http://localhost:8080>. Browser audio starts after the first Play or
 keyboard interaction because Web Audio requires a user gesture.
 
@@ -87,6 +95,7 @@ symbols; normal mode retains the photographed number legends.
 ## GitHub Pages
 
 Pushing `main` runs [the Pages workflow](.github/workflows/pages.yml), builds the
-WebAssembly release with the repository subpath as its public URL, and deploys
-the `dist` artifact through GitHub Pages. In the repository's GitHub settings,
-set **Pages → Source** to **GitHub Actions** once before the first deployment.
+LTO-optimized WebAssembly release with the repository subpath as its public URL,
+and deploys the `dist` artifact through GitHub Pages. In the repository's GitHub
+settings, set **Pages → Source** to **GitHub Actions** once before the first
+deployment.

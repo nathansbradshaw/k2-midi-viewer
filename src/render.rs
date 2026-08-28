@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::canvas::{self, Frame, Geometry, Path, Text};
-use iced::{Color, Point, Rectangle, Renderer, Size, Theme, mouse, touch};
+use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector, mouse, touch};
 
 use crate::Message;
 use crate::key::{Cluster, Key, KeyId};
@@ -31,15 +31,11 @@ impl PhotoBoardAssets {
         Self {
             shell: handle(&include_bytes!("../assets/keyboard/keyboard-clean-mask.png")[..]),
             leds: handle(&include_bytes!("../assets/keyboard/led-panel-board-crop.png")[..]),
-            // Downscaled once from the shared 1024px master, matching
-            // `decode_and_downscale`'s use for the mixer knobs — these dials
-            // render at well under 100px, and handing the GPU that much
-            // minification directly risks the same mip-sampling artifacts
-            // seen there.
-            knob_face: crate::decode_and_downscale(
-                &include_bytes!("../assets/keyboard/controls/rotary-knob-face.png")[..],
-                128,
-                128,
+            // Pre-sized offline with Lanczos filtering. Keeping runtime work
+            // to one small PNG decode avoids blocking WASM startup on a 1024px
+            // resize while retaining the master asset for future exports.
+            knob_face: handle(
+                &include_bytes!("../assets/keyboard/controls/rotary-knob-face-runtime.png")[..],
             ),
             key_sprites: RefCell::new(HashMap::new()),
         }
@@ -1120,15 +1116,19 @@ fn draw_tape_labels(frame: &mut Frame, size: Size, compact_crop: bool) {
         });
     }
 
-    frame.fill_text(Text {
-        content: "THE\nKEYBOARD²".to_string(),
-        position: Point::new(board.x + 55.0 * scale, board.y + 525.0 * scale),
-        color: ink,
-        size: iced::Pixels((12.0 * scale).max(4.0)),
-        font: TAPE_FONT,
-        align_x: Horizontal::Center.into(),
-        align_y: Vertical::Center,
-        ..Text::default()
+    frame.with_save(|frame| {
+        frame.translate(Vector::new(board.x + 55.0 * scale, board.y + 525.0 * scale));
+        frame.rotate(-std::f32::consts::FRAC_PI_2);
+        frame.fill_text(Text {
+            content: "THE\nKEYBOARD²".to_string(),
+            position: Point::ORIGIN,
+            color: ink,
+            size: iced::Pixels((12.0 * scale).max(4.0)),
+            font: TAPE_FONT,
+            align_x: Horizontal::Center.into(),
+            align_y: Vertical::Center,
+            ..Text::default()
+        });
     });
 }
 

@@ -25,7 +25,12 @@
       content="Open a MIDI file and visualize it across a full computer keyboard."
     />
     <title>K2 MIDI Viewer</title>
-    <link data-trunk rel="rust" data-wasm-opt="z" />
+    <link
+      data-trunk
+      rel="rust"
+      data-wasm-opt="z"
+      data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int"
+    />
     <style>
       html,
       body {
@@ -43,9 +48,70 @@
       canvas {
         display: block;
       }
+
+      #loading-screen {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: #090a08;
+        z-index: 1000;
+        transition: opacity 0.35s ease;
+      }
+
+      #loading-screen.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #loading-screen .spinner {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        border: 3px solid rgba(240, 232, 216, 0.15);
+        border-top-color: #d98e4c;
+        animation: loading-spin 0.9s linear infinite;
+      }
+
+      #loading-screen .title {
+        color: #f0e8d8;
+        font-family: system-ui, sans-serif;
+        font-size: 15px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.85;
+      }
+
+      @keyframes loading-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
     </style>
   </head>
   <body>
     <noscript>K2 MIDI Viewer requires JavaScript and WebAssembly.</noscript>
+    <div id="loading-screen">
+      <div class="spinner"></div>
+      <div class="title">Loading K2 MIDI Viewer&hellip;</div>
+    </div>
+    <script>
+      // The app itself removes the "hidden" class (via `boot::notify_first_frame`
+      // in src/main.rs) once it has actually rendered a frame — wasm finishing
+      // module init isn't enough of a signal, since WebGL/wgpu setup runs
+      // asynchronously after that and leaves the canvas blank for a few more
+      // seconds. This timeout is only a safety net for the rare case that
+      // never happens (a panic before the first frame, WebGL unsupported).
+      window.setTimeout(() => {
+        const el = document.getElementById("loading-screen");
+        if (el && !el.classList.contains("hidden")) {
+          console.warn("K2 MIDI Viewer: timed out waiting for first frame; hiding loading screen.");
+          el.classList.add("hidden");
+        }
+      }, 45000);
+    </script>
   </body>
 </html>
