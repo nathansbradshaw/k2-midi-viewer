@@ -2021,6 +2021,30 @@ fn octave_shortcut_event(
     }
 }
 
+/// F8 is intentionally outside the browser/OS-reserved F1/F5/F11 set. It
+/// toggles a distraction-free performance view; Escape is an additional,
+/// conventional way out once that view is active.
+fn keyboard_focus_shortcut_event(
+    event: iced::Event,
+    _status: iced::event::Status,
+    window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key, repeat: false, ..
+        }) => match key {
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::F8) => {
+                Some(Message::ToggleKeyboardFocus(window))
+            }
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
+                Some(Message::ExitKeyboardFocus(window))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// How to pick a key when a note repeats across this keyboard's overlapping
 /// rows. LeftRight/UpDown are fixed, predictable preferences (always the
 /// last/first occurrence). Closest instead solves for the key assignment
@@ -2105,6 +2129,12 @@ struct App {
     waveform_keys: HashSet<KeyId>,
     pressed_keys: HashSet<KeyId>,
     keyboard_hits_enabled: bool,
+    /// F8 performance view: the photographed keyboard is the only visible
+    /// surface and is contain-fitted to the full window without distortion.
+    keyboard_focus_mode: bool,
+    /// Focus mode temporarily enables computer-key projection. Restore the
+    /// user's prior choice when the full console returns.
+    keyboard_hits_before_focus: bool,
     drum_symbols_enabled: bool,
     compact_keyboard: bool,
     /// User-selected board viewport height. `None` keeps the responsive
@@ -2252,6 +2282,8 @@ impl Default for App {
             waveform_keys: HashSet::new(),
             pressed_keys: HashSet::new(),
             keyboard_hits_enabled: false,
+            keyboard_focus_mode: false,
+            keyboard_hits_before_focus: false,
             drum_symbols_enabled: false,
             compact_keyboard: false,
             keyboard_height_override: None,
@@ -2347,6 +2379,8 @@ pub enum Message {
     KeyReleased(KeyId),
     KnobChanged(u8, f32), // knob index, 0.0..=1.0 dial position
     ToggleKeyboardHits,
+    ToggleKeyboardFocus(iced::window::Id),
+    ExitKeyboardFocus(iced::window::Id),
     ToggleDrumSymbols,
     ToggleCompactKeyboard,
     KeyboardHeightChanged(f32),
@@ -3486,6 +3520,22 @@ impl App {
         }
     }
 
+    fn set_keyboard_focus_mode(&mut self, enabled: bool) {
+        if enabled == self.keyboard_focus_mode {
+            return;
+        }
+
+        if enabled {
+            self.keyboard_hits_before_focus = self.keyboard_hits_enabled;
+            self.keyboard_hits_enabled = true;
+            self.keyboard_focus_mode = true;
+        } else {
+            self.release_computer_keys();
+            self.keyboard_focus_mode = false;
+            self.keyboard_hits_enabled = self.keyboard_hits_before_focus;
+        }
+    }
+
     fn nearest_keyboard_note(&self, note: u8) -> Option<u8> {
         let s = &self.keyboard_notes_sorted;
         if s.is_empty() {
@@ -3554,6 +3604,28 @@ impl App {
                 self.keyboard_hits_enabled = !self.keyboard_hits_enabled;
                 self.sync_url();
                 Task::none()
+            }
+
+            Message::ToggleKeyboardFocus(window) => {
+                let enabled = !self.keyboard_focus_mode;
+                self.set_keyboard_focus_mode(enabled);
+                iced::window::set_mode(
+                    window,
+                    if enabled {
+                        iced::window::Mode::Fullscreen
+                    } else {
+                        iced::window::Mode::Windowed
+                    },
+                )
+            }
+
+            Message::ExitKeyboardFocus(window) => {
+                if self.keyboard_focus_mode {
+                    self.set_keyboard_focus_mode(false);
+                    iced::window::set_mode(window, iced::window::Mode::Windowed)
+                } else {
+                    Task::none()
+                }
             }
 
             Message::ToggleDrumSymbols => {
@@ -4152,16 +4224,75 @@ impl App {
             Subscription::none()
         };
         let octave_shortcut = iced::event::listen_with(octave_shortcut_event);
+        let keyboard_focus_shortcut =
+            iced::event::listen_with(keyboard_focus_shortcut_event);
 
-        Subscription::batch([playback, resize, computer_keyboard, octave_shortcut])
+        Subscription::batch([
+            playback,
+            resize,
+            computer_keyboard,
+            octave_shortcut,
+            keyboard_focus_shortcut,
+        ])
     }
 
     // ---------------------------------------------------------------------------
     // View
     // ---------------------------------------------------------------------------
 
+    /// The F8 performance view is deliberately its own render path. The
+    /// canvas receives the whole viewport and `BoardCanvas` contain-fits the
+    /// 1949×807 photograph inside it, so the board is as large as possible
+    /// while its source aspect ratio remains exact.
+    fn keyboard_focus_view(&self) -> Element<'_, Message> {
+        let highlighted = if self.staff_selection.is_some() {
+            &self.selection_highlight_cache
+        } else if self.show_all_notes {
+            &self.all_notes_cache
+        } else {
+            &self.highlighted
+        };
+        #[cfg(target_arch = "wasm32")]
+        let overlay_highlighted = Some(&self.web_midi_highlighted);
+        #[cfg(not(target_arch = "wasm32"))]
+        let overlay_highlighted = None;
+
+        let keyboard = Canvas::new(BoardCanvas {
+            photo_assets: &self.photo_assets,
+            compact_crop: false,
+            keys: &self.keys,
+            highlighted,
+            overlay_highlighted,
+            play_order: self
+                .staff_selection
+                .is_some()
+                .then_some(&self.selection_play_order),
+            selected_controls: &self.waveform_keys,
+            pressed: &self.pressed_keys,
+            projected_labels: Some(&self.computer_key_labels),
+            drum_note_to_key: &self.drum_note_to_key,
+            show_drum_symbols: self.drum_symbols_enabled,
+            knob_values: &self.knob_values,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        container(keyboard)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(APP_BG)),
+                text_color: Some(TEXT_MAIN),
+                ..Default::default()
+            })
+            .into()
+    }
+
     fn view(&self) -> Element<'_, Message> {
         boot::notify_first_frame();
+        if self.keyboard_focus_mode {
+            return self.keyboard_focus_view();
+        }
         let has_file = self.midi_file.is_some();
         let dense_desktop = self.window_size.width >= 1180.0;
         let (outer_pad, section_gap, panel_v, panel_h, row_gap, track_gap) =
@@ -4586,7 +4717,7 @@ impl App {
             Some(Message::ToggleKeyboardHits),
             72.0,
             format!(
-                "Computer keyboard input — {}.",
+                "Computer keyboard input — {}. Press F8 for full-screen keyboard focus mode.",
                 if self.keyboard_hits_enabled { "On" } else { "Off" }
             ),
         );
