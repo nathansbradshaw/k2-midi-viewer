@@ -192,7 +192,7 @@ impl ControlAssets {
             ),
             roller_selector: image::Handle::from_bytes(
                 &include_bytes!(
-                    "../assets/keyboard/controls/roller-selector-photo-runtime.png"
+                    "../assets/keyboard/controls/roller-selector-inline-photo-runtime.png"
                 )[..],
             ),
             panel_screw: image::Handle::from_bytes(
@@ -847,10 +847,10 @@ fn utility_key(
     let active = lamp.unwrap_or(false);
     let mut contents: Vec<Element<Message>> = vec![
         iced::widget::svg(icon)
-            .width(Length::Fixed(15.0))
-            .height(Length::Fixed(15.0))
+            .width(Length::Fixed(17.0))
+            .height(Length::Fixed(17.0))
             .into(),
-        text(legend.into()).size(9).into(),
+        text(legend.into()).size(10).into(),
     ];
     if let Some(lit) = lamp {
         contents.push(
@@ -864,11 +864,11 @@ fn utility_key(
             .into(),
         );
     }
-    let control = button(row(contents).spacing(4).align_y(Alignment::Center))
+    let control = button(row(contents).spacing(5).align_y(Alignment::Center))
         .width(Length::Fixed(width))
         .height(Length::Fixed(30.0))
-        .padding([4, 6])
-        .style(move |_: &Theme, status| panel_key_style(active, status))
+        .padding([3, 7])
+        .style(move |_: &Theme, status| utility_key_style(active, status))
         .on_press_maybe(on_press);
     let key: Element<Message> = Stack::new()
         .push(control)
@@ -881,6 +881,30 @@ fn utility_key(
         )
         .into();
     hardware_tooltip(key, hint)
+}
+
+/// Higher-contrast than the pitch keys because these compact icon controls
+/// carry the entire visible identity of their actions. The warm translucent
+/// wash lifts the photographed cap without introducing browser-like chrome.
+fn utility_key_style(active: bool, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Active if active => ACCENT.scale_alpha(0.10),
+        button::Status::Active => Color::from_rgba8(0xf3, 0xe8, 0xcf, 0.055),
+        button::Status::Hovered => Color::from_rgba8(0xf3, 0xe8, 0xcf, 0.13),
+        button::Status::Pressed => WARM_BLACK_DEEP.scale_alpha(0.42),
+        button::Status::Disabled => Color::from_rgba8(0xf3, 0xe8, 0xcf, 0.025),
+    };
+    let text_color = match status {
+        button::Status::Disabled => TEXT_MUTED.scale_alpha(0.76),
+        _ => TEXT_MAIN,
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color,
+        border: Border::default(),
+        shadow: Shadow::default(),
+        snap: false,
+    }
 }
 
 fn pitch_mount_style(_: &Theme) -> container::Style {
@@ -1075,19 +1099,26 @@ fn roller_channel_selector<'a>(
     .width(Length::Fixed(WIDTH))
     .height(Length::Fixed(HEIGHT))
     .align_y(Alignment::Center);
-    let legend = container(
+    let channel_legend = container(
         row![
-            text("PLAY CH").size(9).color(TEXT_MAIN.scale_alpha(0.82)),
-            text(format!("{}", selected.channel)).size(11).color(TEXT_MAIN),
-            text("▼").size(8).color(TEXT_MUTED),
+            text("CH").size(10).color(TEXT_MAIN.scale_alpha(0.86)),
+            text(format!("{}", selected.channel)).size(13).color(TEXT_MAIN),
         ]
-        .spacing(5)
+        .spacing(4)
         .align_y(Alignment::Center),
     )
-    .width(Length::Fixed(WIDTH))
-    .height(Length::Fixed(HEIGHT))
-    .padding([4, 14])
-    .align_y(Alignment::Start);
+    .width(Length::Fixed(50.0))
+    .height(Length::Fill)
+    .center_x(Length::Fill)
+    .center_y(Length::Fill);
+    let arrow = container(text("▼").size(11).color(TEXT_MAIN))
+        .width(Length::Fixed(20.0))
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+    let legend = container(row![channel_legend, Space::new().width(Length::Fill), arrow])
+        .width(Length::Fixed(WIDTH))
+        .height(Length::Fixed(HEIGHT));
     let face = Canvas::new(PhotoSurface {
         handle: assets.roller_selector.clone(),
     })
@@ -2023,7 +2054,7 @@ impl KeyPickMode {
         match self {
             KeyPickMode::LeftRight => "L/R",
             KeyPickMode::UpDown => "U/D",
-            KeyPickMode::Closest => "NEAR",
+            KeyPickMode::Closest => "NEAREST",
         }
     }
 }
@@ -4354,10 +4385,10 @@ impl App {
         let all_notes_btn = utility_key(
             &self.control_assets,
             self.control_assets.icon_all_notes.clone(),
-            "ALL",
+            "NOTES",
             Some(self.show_all_notes),
             has_file.then_some(Message::ToggleAllNotes),
-            54.0,
+            76.0,
             format!(
                 "Show all notes — {}. Include notes outside the current playback moment.",
                 if self.show_all_notes { "On" } else { "Off" }
@@ -4541,7 +4572,7 @@ impl App {
             self.key_pick_mode.short_label(),
             None,
             Some(Message::OctaveLayoutToggle),
-            76.0,
+            100.0,
             format!(
                 "Key mapping — {}. Click to cycle how repeated notes choose a keyboard row.",
                 self.key_pick_mode.label().trim_start_matches("Rows: ")
@@ -4553,7 +4584,7 @@ impl App {
             "KEYS",
             Some(self.keyboard_hits_enabled),
             Some(Message::ToggleKeyboardHits),
-            60.0,
+            72.0,
             format!(
                 "Computer keyboard input — {}.",
                 if self.keyboard_hits_enabled { "On" } else { "Off" }
@@ -4563,10 +4594,10 @@ impl App {
         let drum_symbols_btn = utility_key(
             &self.control_assets,
             self.control_assets.icon_drum.clone(),
-            "DRUM",
+            "DRUMS",
             Some(self.drum_symbols_enabled),
             Some(Message::ToggleDrumSymbols),
-            64.0,
+            80.0,
             format!(
                 "Drum symbols — {}. Show GM percussion labels on the numpad.",
                 if self.drum_symbols_enabled { "On" } else { "Off" }
@@ -4579,7 +4610,7 @@ impl App {
             "BOARD",
             Some(self.compact_keyboard),
             Some(Message::ToggleCompactKeyboard),
-            68.0,
+            82.0,
             format!(
                 "Keyboard view — {}.",
                 if self.compact_keyboard { "Compact" } else { "Full" }
@@ -4608,11 +4639,11 @@ impl App {
 
         // Secondary strip: pitch mapping and view toggles, muted styling so
         // they read as auxiliary controls under the main header row.
-        // Three logical clusters — pitch, playback speed, and compact
-        // icon-led utility controls. Tooltips carry the longer explanations
-        // without contributing another line to the layout.
+        // Playback speed lives with the transport controls below; keeping this
+        // strip to pitch and compact utilities also reduces its row height.
+        // Tooltips carry the longer explanations without contributing another
+        // line to the layout.
         let pitch_cluster = control_cluster(pitch_controls, dense_desktop);
-        let speed_cluster = control_cluster(speed_controls, dense_desktop);
         let utility_cluster = control_cluster(
             row![
                 mapping_btn,
@@ -4628,9 +4659,7 @@ impl App {
 
         let header_secondary: Element<Message> = if self.window_size.width < 1180.0 {
             column![
-                row![pitch_cluster, speed_cluster]
-                    .spacing(row_gap)
-                    .align_y(Alignment::Center),
+                pitch_cluster,
                 scrollable(utility_cluster).direction(scrollable::Direction::Horizontal(
                     scrollable::Scrollbar::new().width(3).scroller_width(3),
                 )),
@@ -4638,7 +4667,7 @@ impl App {
             .spacing(row_gap)
             .into()
         } else {
-            row![pitch_cluster, speed_cluster, utility_cluster]
+            row![pitch_cluster, utility_cluster]
                 .spacing(row_gap * 1.5)
                 .align_y(Alignment::Center)
                 .into()
@@ -4726,6 +4755,7 @@ impl App {
             audio_available.then_some(Message::ToggleAudio),
             audio_label,
         );
+        let speed_cluster = control_cluster(speed_controls, dense_desktop);
 
         // Arrow Up/Down transpose hand-played notes; only worth showing once
         // it's actually been nudged off center.
@@ -4793,6 +4823,7 @@ impl App {
                     stop_btn,
                     looper_btn,
                     audio_btn,
+                    speed_cluster,
                     live_octave_label,
                 ]
                 .spacing(row_gap)
@@ -4810,6 +4841,7 @@ impl App {
                 stop_btn,
                 looper_btn,
                 audio_btn,
+                speed_cluster,
                 live_octave_label,
                 scrubber,
                 text(time_str).size(13).color(TEXT_MUTED),

@@ -39,7 +39,7 @@ the consuming UI.
 | `module-frame.svg` | SVG, 1200 × 240 viewBox | Stretchable low-contrast frame for header, transport, mixer, or visualizer modules. |
 | `horizontal-switch-off.png` | RGBA PNG, 2135 × 736 | Label-free horizontal Loop/Sound switch in its left/OFF position. |
 | `horizontal-switch-on.png` | RGBA PNG, 2067 × 761 | Matching switch with the metal handle in its right/ON position. |
-| `roller-selector-photo.png` | RGB PNG, 1893 × 831 | Label-free recessed roller selector for the live-play MIDI channel. |
+| `roller-selector-inline-photo.png` | RGB PNG, 1908 × 824 | Label-free inline CH/value well, substantial roller, and arrow well for the live-play MIDI channel. |
 | `panel-screw-photo.png` | RGBA PNG, 1271 × 1237 | Isolated oxidized slotted screw used to anchor the shared console plate. |
 | `icon-map-rows.svg` | SVG, 16 × 16 viewBox | Row-mapping utility symbol. |
 | `icon-all-notes.svg` | SVG, 16 × 16 viewBox | All-notes visibility symbol. |
@@ -74,7 +74,7 @@ decode and resize multi-megapixel images before its first frame.
 | `selector-housing-photo-runtime.png` | 416 × 130 |
 | `horizontal-switch-off-runtime.png` | 192 × 64 |
 | `horizontal-switch-on-runtime.png` | 192 × 64 |
-| `roller-selector-photo-runtime.png` | 426 × 126 |
+| `roller-selector-inline-photo-runtime.png` | 426 × 126 |
 | `panel-screw-photo-runtime.png` | 64 × 64 |
 
 The panel-wide equivalent is `../panel-wear-overlay-runtime.png` at 512 × 512.
@@ -128,9 +128,10 @@ copied into the WASM bundle even when a smaller derivative is also present.
 - Keep `horizontal-switch-off-runtime.png` and
   `horizontal-switch-on-runtime.png` in identical UI bounds. The permanent
   OFF/ON legends are rendered live beside them; neither bitmap contains text.
-- Keep live channel text and the dropdown triangle above
-  `roller-selector-photo-runtime.png`. The photograph is only the recessed
-  housing and ribbed wheel, so channel changes remain sharp and accessible.
+- Keep live `CH`/value text in the left well and the dropdown triangle in the
+  right well of `roller-selector-inline-photo-runtime.png`. The substantial
+  roller stays between them on the same baseline, so channel changes remain
+  sharp, compact, and accessible.
 - Place exactly four `panel-screw-photo-runtime.png` instances over the shared
   console corners. They are decorative overlays and must never reserve layout
   space or intercept input.

@@ -56,7 +56,7 @@ The control order stays familiar while the grouping becomes clearer:
 
 ```text
 ┌ screw ───────────────────────────────────────────────────────────── screw ┐
-│ K2 identity │ amber status display │ MIDI I/O │ PLAY CH encoder │ OPEN  │
+│ K2 identity │ amber status display │ MIDI I/O │ CH 2 [wheel] ▼ │ OPEN  │
 │             │                       │          │                  │ MIDI  │
 ├──────────────────────────────── shallow equipment groove ────────────────┤
 │ PITCH [−][OCT][+][reset] │ RATE knob │ MAP │ ALL │ KEYS │ DRUM │ BOARD │
@@ -110,14 +110,15 @@ Tooltips appear below after roughly `350 ms` and also appear when the control re
 
 ## 2. Live channel roller encoder
 
-The header's `PLAY CH` control should become a discrete, detented encoder similar to the supplied recessed roller reference. This applies to the live-play channel selector only; the per-track CH and OCT rotary knobs remain as they are.
+The header's live-play channel control should become a discrete, detented encoder similar to the supplied recessed roller reference. This applies to the live-play channel selector only; the per-track CH and OCT rotary knobs remain as they are.
 
 ### Physical construction
 
 - Footprint: exactly the current `142 × 42 px` header-selector box.
 - Housing: a deep rectangular recess with the same outer bevel and wear language as the action keys.
-- Top legend: `PLAY CH 2` with a small downward triangle for direct-list access.
-- Lower mechanism: a ribbed horizontal roller, approximately `40 × 18 px`, centered in a black slot.
+- Inline legend well: `CH 2` on the left.
+- Inline mechanism: a substantial ribbed roller in the center/right, mounted in a deep black slot on the same baseline as the legend.
+- Arrow well: a small downward triangle at the far right for direct-list access.
 - The wheel's lighting stays stationary. Selection changes shift rib highlights/pointer position rather than rotating the entire photographic texture.
 - Channel values are displayed as the user-facing range `1–16`; internal zero-based values remain an implementation detail.
 
@@ -172,20 +173,20 @@ Move `Rows: Closest/L/R/U/D` into the utility control group described below.
 
 Use an icon-led hybrid rather than fully icon-only buttons. Symbols reduce scanning and width; tiny stable legends prevent the interface from becoming indecipherable on touch devices where hover does not exist. Tooltips provide the full explanation.
 
-All icons should be simple custom SVGs with the same `16 × 16` view box, `1.5 px` warm-ivory strokes, rounded joins, and no baked state color. This avoids platform-dependent font glyphs.
+All icons should be simple custom SVGs with the same `16 × 16` view box, approximately `1.75 px` warm-ivory strokes, rounded joins, and no baked state color. This avoids platform-dependent font glyphs.
 
 | Control | Visible face | Type and state treatment | Tooltip content |
 | --- | --- | --- | --- |
-| Row mapping | stacked-row icon + `NEAR`, `L/R`, or `U/D` | Multi-state selector; current value is visible, no on/off lamp | `Key mapping — Closest. Click to cycle how repeated notes choose a keyboard row.` |
-| All notes | note-group icon + `ALL` | Latching toggle with small jewel when on | `Show all notes — On/Off. Include notes outside the current playback moment.` |
+| Row mapping | stacked-row icon + `NEAREST`, `L/R`, or `U/D` | Multi-state selector; current value is visible, no on/off lamp | `Key mapping — Closest. Click to cycle how repeated notes choose a keyboard row.` |
+| All notes | note-group icon + `NOTES` | Latching toggle with small jewel when on | `Show all notes — On/Off. Include notes outside the current playback moment.` |
 | Computer keys | keyboard-grid icon + `KEYS` | Latching toggle with small jewel when on | `Computer keyboard input — On/Off.` |
-| Drum symbols | drum/pad icon + `DRUM` | Latching toggle with small jewel when on | `Drum symbols — On/Off. Show GM percussion labels on the numpad.` |
+| Drum symbols | drum/pad icon + `DRUMS` | Latching toggle with small jewel when on | `Drum symbols — On/Off. Show GM percussion labels on the numpad.` |
 | Compact board | crop/frame icon + `BOARD` | Latching toggle with small jewel when compact | `Keyboard view — Compact/Full.` |
 
 Recommended face sizes:
 
-- Mapping selector: `68–76 × 30 px`, because it carries a changing value.
-- Binary utility keys: `48–58 × 30 px` each.
+- Mapping selector: approximately `100 × 30 px`, because it carries a changing value.
+- Binary utility keys: approximately `72–82 × 30 px` each.
 - Icon-to-legend gap: `4 px`.
 - Group gap: `4–5 px`.
 
