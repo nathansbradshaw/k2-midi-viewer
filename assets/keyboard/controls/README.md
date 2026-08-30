@@ -37,6 +37,16 @@ the consuming UI.
 | `button-keycap-ivory-v3.png` | RGBA PNG, 1774 × 887 | Geometry-matched aged ivory colorway of the rectangular v3 master. |
 | `selector-housing-photo.png` | RGBA PNG, 1024 × 320 | Recessed charcoal selector chassis with a separate blank arrow well. |
 | `module-frame.svg` | SVG, 1200 × 240 viewBox | Stretchable low-contrast frame for header, transport, mixer, or visualizer modules. |
+| `horizontal-switch-off.png` | RGBA PNG, 2135 × 736 | Label-free horizontal Loop/Sound switch in its left/OFF position. |
+| `horizontal-switch-on.png` | RGBA PNG, 2067 × 761 | Matching switch with the metal handle in its right/ON position. |
+| `roller-selector-photo.png` | RGB PNG, 1893 × 831 | Label-free recessed roller selector for the live-play MIDI channel. |
+| `panel-screw-photo.png` | RGBA PNG, 1271 × 1237 | Isolated oxidized slotted screw used to anchor the shared console plate. |
+| `icon-map-rows.svg` | SVG, 16 × 16 viewBox | Row-mapping utility symbol. |
+| `icon-all-notes.svg` | SVG, 16 × 16 viewBox | All-notes visibility symbol. |
+| `icon-computer-keys.svg` | SVG, 16 × 16 viewBox | Computer-keyboard input symbol. |
+| `icon-drum.svg` | SVG, 16 × 16 viewBox | Drum-symbol overlay control. |
+| `icon-board.svg` | SVG, 16 × 16 viewBox | Compact/full keyboard view symbol. |
+| `icon-reset-pitch.svg` | SVG, 16 × 16 viewBox | Pitch-reset action symbol. |
 
 ## Runtime derivatives
 
@@ -62,6 +72,10 @@ decode and resize multi-megapixel images before its first frame.
 | `button-keycap-salmon-v3-runtime.png` | 384 × 128 |
 | `button-keycap-ivory-v3-runtime.png` | 384 × 128 |
 | `selector-housing-photo-runtime.png` | 416 × 130 |
+| `horizontal-switch-off-runtime.png` | 192 × 64 |
+| `horizontal-switch-on-runtime.png` | 192 × 64 |
+| `roller-selector-photo-runtime.png` | 426 × 126 |
+| `panel-screw-photo-runtime.png` | 64 × 64 |
 
 The panel-wide equivalent is `../panel-wear-overlay-runtime.png` at 512 × 512.
 Keep the masters out of `include_bytes!`; otherwise their compressed bytes are
@@ -111,6 +125,15 @@ copied into the WASM bundle even when a smaller derivative is also present.
 - Use `led-jewel-unlit.png` as the preferred neutral base. Put colored light
   inside the lens region with CSS/canvas and keep the hardware image above it;
   do not hue-rotate the bezel.
+- Keep `horizontal-switch-off-runtime.png` and
+  `horizontal-switch-on-runtime.png` in identical UI bounds. The permanent
+  OFF/ON legends are rendered live beside them; neither bitmap contains text.
+- Keep live channel text and the dropdown triangle above
+  `roller-selector-photo-runtime.png`. The photograph is only the recessed
+  housing and ribbed wheel, so channel changes remain sharp and accessible.
+- Place exactly four `panel-screw-photo-runtime.png` instances over the shared
+  console corners. They are decorative overlays and must never reserve layout
+  space or intercept input.
 
 Example browser layering for the jewel:
 

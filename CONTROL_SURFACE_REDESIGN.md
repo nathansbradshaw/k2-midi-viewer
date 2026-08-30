@@ -1,8 +1,27 @@
 # K2 control-surface redesign
 
-Status: proposed design specification  
+Status: first integrated design pass implemented
 Scope: upper control console only  
 Primary constraint: the redesign must not increase the interface's vertical footprint at any supported window size.
+
+## First-pass implementation status
+
+Implemented on August 30, 2026:
+
+- Generated and integrated paired horizontal Loop/Sound switch assets.
+- Generated and integrated the recessed live-channel roller housing.
+- Generated and integrated a four-corner console screw asset.
+- Added deterministic row-map, all-notes, computer-key, drum, board, and pitch-reset SVG icons.
+- Rebuilt Pitch as one mounted group and moved row mapping into the utility strip.
+- Replaced sentence-length utility controls with icon + micro-legend keys and hover tooltips.
+- Preserved the `42 px`, `30 px`, and `40 px` main component height limits.
+- Reduced the narrow-layout secondary strip from four rows to two.
+
+Still planned after visual review:
+
+- Add scroll-wheel/detent and drag gestures to the roller; direct list selection and keyboard behavior already remain available through the native pick list.
+- Extend tooltip help from pointer hover to explicit keyboard-focus presentation if Iced exposes a stable focus hook for these composed controls.
+- Fine-tune asset scale and wear opacity from user feedback after the first screenshots.
 
 ## Outcome
 
@@ -297,4 +316,3 @@ New UI icons should be deterministic SVG assets rather than generated bitmaps. T
 - Adding animation purely for atmosphere
 - Changing playback, MIDI, loop-range, or pitch semantics
 - Making the entire application background wooden or heavily distressed
-

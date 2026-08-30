@@ -20,11 +20,9 @@ use iced::advanced::svg;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Image as CanvasImage, Path};
 use iced::widget::image::{self, FilterMethod};
 use iced::widget::{
-    Stack, button, column, container, image as image_widget, pick_list, row, scrollable, slider,
-    text, tooltip,
+    Space, Stack, button, column, container, image as image_widget, pick_list, row, scrollable,
+    slider, text, tooltip,
 };
-#[cfg(target_arch = "wasm32")]
-use iced::widget::Space;
 use iced::{
     Alignment, Background, Border, Color, ContentFit, Element, Length, Padding, Point, Radians,
     Rectangle, Renderer, Shadow, Size, Subscription, Task, Theme, Vector, mouse,
@@ -119,6 +117,16 @@ struct ControlAssets {
     // the same treatment already given the other photographic PNG assets.
     rocker_off: image::Handle,
     rocker_on: image::Handle,
+    horizontal_switch_off: image::Handle,
+    horizontal_switch_on: image::Handle,
+    roller_selector: image::Handle,
+    panel_screw: image::Handle,
+    icon_map_rows: svg::Handle,
+    icon_all_notes: svg::Handle,
+    icon_computer_keys: svg::Handle,
+    icon_drum: svg::Handle,
+    icon_board: svg::Handle,
+    icon_reset_pitch: svg::Handle,
     label_plate: image::Handle,
     lcd_glass: svg::Handle,
 }
@@ -171,6 +179,42 @@ impl ControlAssets {
             ),
             rocker_on: image::Handle::from_bytes(
                 &include_bytes!("../assets/keyboard/controls/rocker-switch-on.png")[..],
+            ),
+            horizontal_switch_off: image::Handle::from_bytes(
+                &include_bytes!(
+                    "../assets/keyboard/controls/horizontal-switch-off-runtime.png"
+                )[..],
+            ),
+            horizontal_switch_on: image::Handle::from_bytes(
+                &include_bytes!(
+                    "../assets/keyboard/controls/horizontal-switch-on-runtime.png"
+                )[..],
+            ),
+            roller_selector: image::Handle::from_bytes(
+                &include_bytes!(
+                    "../assets/keyboard/controls/roller-selector-photo-runtime.png"
+                )[..],
+            ),
+            panel_screw: image::Handle::from_bytes(
+                &include_bytes!("../assets/keyboard/controls/panel-screw-photo-runtime.png")[..],
+            ),
+            icon_map_rows: svg::Handle::from_memory(
+                &include_bytes!("../assets/keyboard/controls/icon-map-rows.svg")[..],
+            ),
+            icon_all_notes: svg::Handle::from_memory(
+                &include_bytes!("../assets/keyboard/controls/icon-all-notes.svg")[..],
+            ),
+            icon_computer_keys: svg::Handle::from_memory(
+                &include_bytes!("../assets/keyboard/controls/icon-computer-keys.svg")[..],
+            ),
+            icon_drum: svg::Handle::from_memory(
+                &include_bytes!("../assets/keyboard/controls/icon-drum.svg")[..],
+            ),
+            icon_board: svg::Handle::from_memory(
+                &include_bytes!("../assets/keyboard/controls/icon-board.svg")[..],
+            ),
+            icon_reset_pitch: svg::Handle::from_memory(
+                &include_bytes!("../assets/keyboard/controls/icon-reset-pitch.svg")[..],
             ),
             label_plate: image::Handle::from_bytes(
                 &include_bytes!(
@@ -584,25 +628,6 @@ fn channel_pick_list_style(_: &Theme, status: pick_list::Status) -> pick_list::S
     }
 }
 
-fn photo_selector_style(_: &Theme, status: pick_list::Status) -> pick_list::Style {
-    let (text_color, handle_color, overlay) = match status {
-        pick_list::Status::Active => (TEXT_MAIN, TEXT_MUTED, Color::TRANSPARENT),
-        pick_list::Status::Hovered => (
-            Color::from_rgb8(0xf2, 0xea, 0xd8),
-            TEXT_MAIN,
-            Color::from_rgba8(0xe9, 0xdf, 0xc8, 0.06),
-        ),
-        pick_list::Status::Opened { .. } => (TEXT_MAIN, ACCENT, WARM_BLACK_DEEP.scale_alpha(0.22)),
-    };
-    pick_list::Style {
-        text_color,
-        placeholder_color: TEXT_MUTED,
-        handle_color,
-        background: Background::Color(overlay),
-        border: Border::default(),
-    }
-}
-
 /// A real transport key: the photographed PNG supplies the worn molded face
 /// while the button remains the accessible input layer. The small jewel is
 /// rendered separately so Play, Pause, and Stop can share one keycap master.
@@ -651,13 +676,6 @@ fn transport_key<'a>(
         .padding(2)
         .style(key_socket_style)
         .into()
-}
-
-#[derive(Clone, Copy)]
-enum PanelKeyShape {
-    Wide,
-    Short,
-    Square,
 }
 
 fn panel_key_style(active: bool, status: button::Status) -> button::Style {
@@ -709,7 +727,6 @@ fn panel_key(
     active: bool,
     on_press: Option<Message>,
     padding: Padding,
-    shape: PanelKeyShape,
 ) -> Element<'static, Message> {
     let label = text(label.into()).size(12);
     let face: Element<Message> = if active {
@@ -729,30 +746,158 @@ fn panel_key(
     } else {
         label.into()
     };
-    let width = match shape {
-        PanelKeyShape::Wide => 132.0,
-        PanelKeyShape::Short => 72.0,
-        PanelKeyShape::Square => 36.0,
-    };
     let control = button(face)
-        .width(Length::Fixed(width))
+        .width(Length::Fixed(36.0))
         .height(Length::Fixed(30.0))
         .padding(padding)
         .style(move |_: &Theme, status| panel_key_style(active, status))
         .on_press_maybe(on_press);
-    let handle = match shape {
-        PanelKeyShape::Wide | PanelKeyShape::Short => assets.panel_keycap_wide.clone(),
-        PanelKeyShape::Square => assets.panel_keycap_square.clone(),
-    };
 
     Stack::new()
         .push(control)
         .push_under(
-            Canvas::new(PhotoSurface { handle })
+            Canvas::new(PhotoSurface {
+                handle: assets.panel_keycap_square.clone(),
+            })
                 .width(Length::Fill)
                 .height(Length::Fill),
         )
         .into()
+}
+
+/// Shared tooltip treatment for the compact physical controls. Tooltips are
+/// overlays, so adding help text never changes the console's height budget.
+fn hardware_tooltip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    label: impl Into<String>,
+) -> Element<'a, Message> {
+    tooltip(
+        content,
+        container(text(label.into()).size(11).color(TEXT_MAIN))
+            .max_width(260.0)
+            .padding([5, 8]),
+        tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .delay(std::time::Duration::from_millis(350))
+    .style(|_: &Theme| container::Style {
+        background: Some(Background::Color(WARM_BLACK_DEEP)),
+        border: Border {
+            color: PANEL_BORDER,
+            width: 1.0,
+            radius: 3.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 4.0,
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// Icon-only companion to [`panel_key`], used for the reset control where a
+/// short hardware symbol is clearer and more cohesive than a wide text key.
+fn icon_panel_key(
+    assets: &ControlAssets,
+    icon: svg::Handle,
+    on_press: Option<Message>,
+    hint: impl Into<String>,
+) -> Element<'static, Message> {
+    let control = button(
+        container(
+            iced::widget::svg(icon)
+                .width(Length::Fixed(16.0))
+                .height(Length::Fixed(16.0)),
+        )
+        .center_x(Length::Fill)
+        .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(36.0))
+    .height(Length::Fixed(30.0))
+    .padding(0)
+    .style(move |_: &Theme, status| panel_key_style(false, status))
+    .on_press_maybe(on_press);
+    let key: Element<Message> = Stack::new()
+        .push(control)
+        .push_under(
+            Canvas::new(PhotoSurface {
+                handle: assets.panel_keycap_square.clone(),
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .into();
+    hardware_tooltip(key, hint)
+}
+
+/// Compact icon + micro-legend utility key. Binary controls keep a jewel in
+/// a fixed slot so toggling never changes width; the row-mapping selector can
+/// omit the lamp and use its visible value as the state indicator instead.
+fn utility_key(
+    assets: &ControlAssets,
+    icon: svg::Handle,
+    legend: impl Into<String>,
+    lamp: Option<bool>,
+    on_press: Option<Message>,
+    width: f32,
+    hint: impl Into<String>,
+) -> Element<'static, Message> {
+    let active = lamp.unwrap_or(false);
+    let mut contents: Vec<Element<Message>> = vec![
+        iced::widget::svg(icon)
+            .width(Length::Fixed(15.0))
+            .height(Length::Fixed(15.0))
+            .into(),
+        text(legend.into()).size(9).into(),
+    ];
+    if let Some(lit) = lamp {
+        contents.push(
+            Canvas::new(LedJewel {
+                handle: assets.led_jewel.clone(),
+                color: ACCENT,
+                lit,
+            })
+            .width(Length::Fixed(7.0))
+            .height(Length::Fixed(7.0))
+            .into(),
+        );
+    }
+    let control = button(row(contents).spacing(4).align_y(Alignment::Center))
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(30.0))
+        .padding([4, 6])
+        .style(move |_: &Theme, status| panel_key_style(active, status))
+        .on_press_maybe(on_press);
+    let key: Element<Message> = Stack::new()
+        .push(control)
+        .push_under(
+            Canvas::new(PhotoSurface {
+                handle: assets.panel_keycap_wide.clone(),
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .into();
+    hardware_tooltip(key, hint)
+}
+
+fn pitch_mount_style(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(WARM_BLACK_DEEP.scale_alpha(0.26))),
+        border: Border {
+            color: Color::from_rgba8(0xd8, 0xc9, 0xa7, 0.09),
+            width: 1.0,
+            radius: 3.0.into(),
+        },
+        shadow: Shadow {
+            color: WARM_BLACK_DEEP.scale_alpha(0.55),
+            offset: Vector::new(0.0, 1.0),
+            blur_radius: 0.0,
+        },
+        ..Default::default()
+    }
 }
 
 const HEADER_CONTROL_HEIGHT: f32 = 42.0;
@@ -813,32 +958,6 @@ fn action_key(
         .into()
 }
 
-/// Mounts a live pick-list above the same photographed rectangular cap used by
-/// its neighboring actions. The arrow remains live, but the outer construction
-/// no longer introduces a third bezel language into the header.
-fn selector_housing<'a>(
-    assets: &ControlAssets,
-    selector: Element<'a, Message>,
-    width: f32,
-) -> Element<'a, Message> {
-    let live_control = container(selector)
-        .width(Length::Fixed(width))
-        .height(Length::Fixed(HEADER_CONTROL_HEIGHT))
-        .align_y(Alignment::Center);
-    Stack::new()
-        .width(Length::Fixed(width))
-        .height(Length::Fixed(HEADER_CONTROL_HEIGHT))
-        .push(live_control)
-        .push_under(
-            Canvas::new(PhotoSurface {
-                handle: assets.action_keycap_neutral.clone(),
-            })
-            .width(Length::Fill)
-            .height(Length::Fill),
-        )
-        .into()
-}
-
 /// A button style with no resting chrome of its own — used to wrap a
 /// decorative canvas (a rocker face, a knob dial) so the canvas art is the
 /// only visible surface, while the button underneath stays the real
@@ -887,6 +1006,140 @@ impl canvas::Program<Message> for PhotoSurface {
         );
         vec![frame.into_geometry()]
     }
+}
+
+/// A compact horizontal OFF/ON hardware switch. The complete photographed
+/// mechanism swaps by state, while the permanent side legends make the state
+/// readable without color and the whole 88×40 module remains the hit target.
+fn horizontal_switch(
+    assets: &ControlAssets,
+    caption: &'static str,
+    on: bool,
+    on_press: Option<Message>,
+    hint: impl Into<String>,
+) -> Element<'static, Message> {
+    let handle = if on {
+        assets.horizontal_switch_on.clone()
+    } else {
+        assets.horizontal_switch_off.clone()
+    };
+    let mechanism = Canvas::new(PhotoSurface { handle })
+        .width(Length::Fixed(42.0))
+        .height(Length::Fixed(14.0));
+    let off_color = if on { TEXT_MUTED } else { TEXT_MAIN };
+    let on_color = if on { TEXT_MAIN } else { TEXT_MUTED };
+    let face = column![
+        text(caption).size(8).color(TEXT_MAIN.scale_alpha(0.82)),
+        row![
+            text("OFF").size(8).color(off_color),
+            mechanism,
+            text("ON").size(8).color(on_color),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(1)
+    .align_x(Alignment::Center);
+    let control = button(face)
+        .width(Length::Fixed(88.0))
+        .height(Length::Fixed(40.0))
+        .padding([2, 4])
+        .style(transparent_control_style)
+        .on_press_maybe(on_press);
+    hardware_tooltip(
+        container(control)
+            .width(Length::Fixed(88.0))
+            .height(Length::Fixed(40.0))
+            .style(mixer_strip_style),
+        hint,
+    )
+}
+
+/// Photographed detented roller housing for the live-play MIDI channel. A
+/// transparent native pick-list remains the real control underneath the live
+/// legend, preserving direct selection and keyboard semantics.
+fn roller_channel_selector<'a>(
+    assets: &ControlAssets,
+    selected: ChannelOption,
+    on_select: impl Fn(ChannelOption) -> Message + 'a,
+) -> Element<'a, Message> {
+    const WIDTH: f32 = 142.0;
+    const HEIGHT: f32 = HEADER_CONTROL_HEIGHT;
+    let picker = container(
+        pick_list(channel_options("PLAY CH"), Some(selected), on_select)
+            .text_size(1)
+            .padding([11, 2])
+            .width(Length::Fill)
+            .style(invisible_pick_list_style),
+    )
+    .width(Length::Fixed(WIDTH))
+    .height(Length::Fixed(HEIGHT))
+    .align_y(Alignment::Center);
+    let legend = container(
+        row![
+            text("PLAY CH").size(9).color(TEXT_MAIN.scale_alpha(0.82)),
+            text(format!("{}", selected.channel)).size(11).color(TEXT_MAIN),
+            text("▼").size(8).color(TEXT_MUTED),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fixed(WIDTH))
+    .height(Length::Fixed(HEIGHT))
+    .padding([4, 14])
+    .align_y(Alignment::Start);
+    let face = Canvas::new(PhotoSurface {
+        handle: assets.roller_selector.clone(),
+    })
+    .width(Length::Fixed(WIDTH))
+    .height(Length::Fixed(HEIGHT));
+    let selector: Element<Message> = Stack::new()
+        .width(Length::Fixed(WIDTH))
+        .height(Length::Fixed(HEIGHT))
+        .push(legend)
+        .push_under(picker)
+        .push_under(face)
+        .into();
+    hardware_tooltip(
+        selector,
+        format!(
+            "Live-play MIDI channel — {}. Click to choose.",
+            selected.channel
+        ),
+    )
+}
+
+/// Four fixed decorative fasteners anchor the shared console plate. The
+/// overlay contains no interactive widgets and consumes no layout space.
+fn console_screws<'a>(
+    content: impl Into<Element<'a, Message>>,
+    screw: image::Handle,
+) -> Element<'a, Message> {
+    let screw_image = || {
+        image_widget(screw.clone())
+            .width(Length::Fixed(9.0))
+            .height(Length::Fixed(9.0))
+            .filter_method(FilterMethod::Linear)
+    };
+    let top = row![
+        screw_image(),
+        Space::new().width(Length::Fill),
+        screw_image(),
+    ];
+    let bottom = row![
+        screw_image(),
+        Space::new().width(Length::Fill),
+        screw_image(),
+    ];
+    let overlay = container(
+        column![top, Space::new().height(Length::Fill), bottom]
+            .height(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(7);
+
+    Stack::new().push(content).push(overlay).into()
 }
 
 /// A compact hardware rocker switch built from the real on/off SVG asset
@@ -1763,6 +2016,14 @@ impl KeyPickMode {
             KeyPickMode::LeftRight => "Rows: L/R",
             KeyPickMode::UpDown => "Rows: U/D",
             KeyPickMode::Closest => "Rows: Closest",
+        }
+    }
+
+    fn short_label(self) -> &'static str {
+        match self {
+            KeyPickMode::LeftRight => "L/R",
+            KeyPickMode::UpDown => "U/D",
+            KeyPickMode::Closest => "NEAR",
         }
     }
 }
@@ -3897,11 +4158,6 @@ impl App {
             panel_v + 11.0
         };
         let resize_handle_height = if dense_desktop { 8.0 } else { 16.0 };
-        let header_toggle_padding = if dense_desktop {
-            Padding::from([5.0, 10.0])
-        } else {
-            Padding::from([8.0, 12.0])
-        };
         // Wood side rails shrink on narrower windows and disappear entirely
         // on phone-width screens rather than competing with the app for space.
         // Narrower than the first pass — an accent, not a dominant frame.
@@ -4012,51 +4268,72 @@ impl App {
         let meta = display_bezel_wrap(&self.control_assets, meta);
 
         let step_label = if self.pitch_step == 12 { "OCT" } else { "ST" };
-        let layout_label = self.key_pick_mode.label();
-        let pitch_controls = row![
-            text("PITCH").size(10).color(TEXT_MUTED),
+        let step_name = if self.pitch_step == 12 {
+            "one octave"
+        } else {
+            "one semitone"
+        };
+        let pitch_down = hardware_tooltip(
             panel_key(
                 &self.control_assets,
                 "−",
                 false,
                 has_file.then_some(Message::PitchDown),
                 Padding::from([5.0, 10.0]),
-                PanelKeyShape::Square,
             ),
+            format!("Lower pitch by {step_name}"),
+        );
+        let pitch_step = hardware_tooltip(
             panel_key(
                 &self.control_assets,
                 step_label,
                 false,
                 Some(Message::PitchStepToggle),
                 Padding::from([5.0, 10.0]),
-                PanelKeyShape::Square,
             ),
+            format!("Pitch step — {step_name}"),
+        );
+        let pitch_up = hardware_tooltip(
             panel_key(
                 &self.control_assets,
                 "+",
                 false,
                 has_file.then_some(Message::PitchUp),
                 Padding::from([5.0, 10.0]),
-                PanelKeyShape::Square,
             ),
-            panel_key(
-                &self.control_assets,
-                "Reset",
-                false,
-                (self.octave_offset != 0).then_some(Message::PitchReset),
-                Padding::from([5.0, 10.0]),
-                PanelKeyShape::Short,
-            ),
-            panel_key(
-                &self.control_assets,
-                layout_label,
-                false,
-                Some(Message::OctaveLayoutToggle),
-                Padding::from([5.0, 10.0]),
-                PanelKeyShape::Wide,
-            ),
+            format!("Raise pitch by {step_name}"),
+        );
+        let pitch_reset = icon_panel_key(
+            &self.control_assets,
+            self.control_assets.icon_reset_pitch.clone(),
+            (self.octave_offset != 0).then_some(Message::PitchReset),
+            "Reset pitch to ±0",
+        );
+        let pitch_separator = container(text(""))
+            .width(1)
+            .height(Length::Fixed(20.0))
+            .style(|_: &Theme| container::Style {
+                background: Some(Background::Color(PANEL_BORDER.scale_alpha(0.7))),
+                ..Default::default()
+            });
+        let pitch_keys = container(
+            row![
+                pitch_down,
+                pitch_step,
+                pitch_up,
+                pitch_separator,
+                pitch_reset,
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .padding([0, 2])
+        .style(pitch_mount_style);
+        let pitch_controls = row![
+            text("PITCH").size(10).color(TEXT_MUTED),
+            pitch_keys,
         ]
-        .spacing(5)
+        .spacing(6)
         .align_y(Alignment::Center);
 
         let speed_percent = (self.playback_speed * 100.0).round().clamp(0.0, u16::MAX as f32) as u16;
@@ -4074,18 +4351,17 @@ impl App {
         .spacing(8)
         .align_y(Alignment::Center);
 
-        let all_notes_label = if self.show_all_notes {
-            "All notes: on"
-        } else {
-            "All notes"
-        };
-        let all_notes_btn = panel_key(
+        let all_notes_btn = utility_key(
             &self.control_assets,
-            all_notes_label,
-            self.show_all_notes,
+            self.control_assets.icon_all_notes.clone(),
+            "ALL",
+            Some(self.show_all_notes),
             has_file.then_some(Message::ToggleAllNotes),
-            Padding::from([5.0, 10.0]),
-            PanelKeyShape::Wide,
+            54.0,
+            format!(
+                "Show all notes — {}. Include notes outside the current playback moment.",
+                if self.show_all_notes { "On" } else { "Off" }
+            ),
         );
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -4100,23 +4376,13 @@ impl App {
             .style(control_style)
             .on_press(Message::NextPort);
 
-        let live_channel_selector: Element<Message> = pick_list(
-            channel_options("PLAY CH"),
-            Some(ChannelOption {
+        let live_channel_btn = roller_channel_selector(
+            &self.control_assets,
+            ChannelOption {
                 prefix: "PLAY CH",
                 channel: self.live_channel + 1,
-            }),
+            },
             |opt: ChannelOption| Message::LiveChannel(opt.channel - 1),
-        )
-        .width(Length::Fill)
-        .text_size(12)
-        .padding([8, 13])
-        .style(photo_selector_style)
-        .into();
-        let live_channel_btn = selector_housing(
-            &self.control_assets,
-            live_channel_selector,
-            142.0,
         );
 
         #[cfg(target_arch = "wasm32")]
@@ -4269,46 +4535,55 @@ impl App {
             // single-row controls against that taller column.
             .align_y(Alignment::Start);
 
-        let keyboard_hits_label = if self.keyboard_hits_enabled {
-            "Computer keys: on"
-        } else {
-            "Computer keys: off"
-        };
-        let keyboard_hits_btn = panel_key(
+        let mapping_btn = utility_key(
             &self.control_assets,
-            keyboard_hits_label,
-            self.keyboard_hits_enabled,
+            self.control_assets.icon_map_rows.clone(),
+            self.key_pick_mode.short_label(),
+            None,
+            Some(Message::OctaveLayoutToggle),
+            76.0,
+            format!(
+                "Key mapping — {}. Click to cycle how repeated notes choose a keyboard row.",
+                self.key_pick_mode.label().trim_start_matches("Rows: ")
+            ),
+        );
+        let keyboard_hits_btn = utility_key(
+            &self.control_assets,
+            self.control_assets.icon_computer_keys.clone(),
+            "KEYS",
+            Some(self.keyboard_hits_enabled),
             Some(Message::ToggleKeyboardHits),
-            header_toggle_padding,
-            PanelKeyShape::Wide,
+            60.0,
+            format!(
+                "Computer keyboard input — {}.",
+                if self.keyboard_hits_enabled { "On" } else { "Off" }
+            ),
         );
 
-        let drum_symbols_label = if self.drum_symbols_enabled {
-            "Drum symbols: on"
-        } else {
-            "Drum symbols: off"
-        };
-        let drum_symbols_btn = panel_key(
+        let drum_symbols_btn = utility_key(
             &self.control_assets,
-            drum_symbols_label,
-            self.drum_symbols_enabled,
+            self.control_assets.icon_drum.clone(),
+            "DRUM",
+            Some(self.drum_symbols_enabled),
             Some(Message::ToggleDrumSymbols),
-            header_toggle_padding,
-            PanelKeyShape::Wide,
+            64.0,
+            format!(
+                "Drum symbols — {}. Show GM percussion labels on the numpad.",
+                if self.drum_symbols_enabled { "On" } else { "Off" }
+            ),
         );
 
-        let compact_keyboard_label = if self.compact_keyboard {
-            "Compact board: on"
-        } else {
-            "Compact board"
-        };
-        let compact_keyboard_btn = panel_key(
+        let compact_keyboard_btn = utility_key(
             &self.control_assets,
-            compact_keyboard_label,
-            self.compact_keyboard,
+            self.control_assets.icon_board.clone(),
+            "BOARD",
+            Some(self.compact_keyboard),
             Some(Message::ToggleCompactKeyboard),
-            header_toggle_padding,
-            PanelKeyShape::Wide,
+            68.0,
+            format!(
+                "Keyboard view — {}.",
+                if self.compact_keyboard { "Compact" } else { "Full" }
+            ),
         );
 
         // Main header row: brand, the big amber LCD (dominant, Fill width),
@@ -4333,36 +4608,37 @@ impl App {
 
         // Secondary strip: pitch mapping and view toggles, muted styling so
         // they read as auxiliary controls under the main header row.
-        // Four logical clusters — pitch mapping, playback speed, view
-        // toggles, board mode — each its own recessed chip, instead of one
-        // continuous toolbar row.
+        // Three logical clusters — pitch, playback speed, and compact
+        // icon-led utility controls. Tooltips carry the longer explanations
+        // without contributing another line to the layout.
         let pitch_cluster = control_cluster(pitch_controls, dense_desktop);
         let speed_cluster = control_cluster(speed_controls, dense_desktop);
-        let view_cluster = control_cluster(
-            row![all_notes_btn, keyboard_hits_btn, drum_symbols_btn]
+        let utility_cluster = control_cluster(
+            row![
+                mapping_btn,
+                all_notes_btn,
+                keyboard_hits_btn,
+                drum_symbols_btn,
+                compact_keyboard_btn,
+            ]
                 .spacing(5)
                 .align_y(Alignment::Center),
             dense_desktop,
         );
-        let board_cluster = control_cluster(compact_keyboard_btn, dense_desktop);
 
-        let header_secondary: Element<Message> = if self.window_size.width < 720.0 {
-            column![pitch_cluster, speed_cluster, view_cluster, board_cluster]
-                .spacing(row_gap)
-                .into()
-        } else if self.window_size.width < 1180.0 {
+        let header_secondary: Element<Message> = if self.window_size.width < 1180.0 {
             column![
                 row![pitch_cluster, speed_cluster]
                     .spacing(row_gap)
                     .align_y(Alignment::Center),
-                row![view_cluster, board_cluster]
-                    .spacing(row_gap)
-                    .align_y(Alignment::Center),
+                scrollable(utility_cluster).direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::new().width(3).scroller_width(3),
+                )),
             ]
             .spacing(row_gap)
             .into()
         } else {
-            row![pitch_cluster, speed_cluster, view_cluster, board_cluster]
+            row![pitch_cluster, speed_cluster, utility_cluster]
                 .spacing(row_gap * 1.5)
                 .align_y(Alignment::Center)
                 .into()
@@ -4395,21 +4671,21 @@ impl App {
             (has_file && self.play_state != PlayState::Stopped).then_some(Message::Stop),
         );
 
-        let looper_caption = if self.looper_enabled && self.staff_selection.is_some() {
-            "LOOP SEL"
+        let loop_scope = if self.staff_selection.is_some() {
+            "Loop selected range"
         } else {
-            "LOOP"
+            "Loop song"
         };
-        let looper_btn = container(rocker_switch(
+        let looper_btn = horizontal_switch(
             &self.control_assets,
-            looper_caption,
+            "LOOP",
             self.looper_enabled,
             Some(Message::ToggleLooper),
-        ))
-        .padding([2, 8])
-        .width(Length::Fixed(88.0))
-        .align_x(Alignment::Center)
-        .style(mixer_strip_style);
+            format!(
+                "{loop_scope} — {}.",
+                if self.looper_enabled { "On" } else { "Off" }
+            ),
+        );
 
         let audio_label = if let Some(error) = &self.audio_error {
             #[cfg(target_arch = "wasm32")]
@@ -4443,36 +4719,13 @@ impl App {
             && self
                 .audio_enabled
                 .load(std::sync::atomic::Ordering::Relaxed);
-        let sound_caption = if self.audio_error.is_some() {
-            "ERROR"
-        } else {
-            "SOUND"
-        };
-        let audio_btn = tooltip(
-            rocker_switch(
-                &self.control_assets,
-                sound_caption,
-                sound_on,
-                audio_available.then_some(Message::ToggleAudio),
-            ),
-            container(text(audio_label).size(11).color(TEXT_MAIN))
-                .padding([4, 8])
-                .style(|_: &Theme| container::Style {
-                    background: Some(Background::Color(WARM_BLACK_DEEP)),
-                    border: Border {
-                        color: PANEL_BORDER,
-                        width: 1.0,
-                        radius: 3.0.into(),
-                    },
-                    ..Default::default()
-                }),
-            tooltip::Position::Bottom,
+        let audio_btn = horizontal_switch(
+            &self.control_assets,
+            "SOUND",
+            sound_on,
+            audio_available.then_some(Message::ToggleAudio),
+            audio_label,
         );
-        let audio_btn = container(audio_btn)
-            .padding([2, 8])
-            .width(Length::Fixed(88.0))
-            .align_x(Alignment::Center)
-            .style(mixer_strip_style);
 
         // Arrow Up/Down transpose hand-played notes; only worth showing once
         // it's actually been nudged off center.
@@ -4942,6 +5195,7 @@ impl App {
             self.chrome_assets.dark_grain.clone(),
             self.chrome_assets.panel_wear.clone(),
         );
+        let console = console_screws(console, self.control_assets.panel_screw.clone());
         let above_keyboard = container(console).padding(Padding {
                 top: outer_pad,
                 right: outer_pad,
