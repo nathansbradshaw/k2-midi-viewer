@@ -28,6 +28,8 @@ pub enum PlayCmd {
     SetKnob(u8, f32), // knob index, real engine value (see synth::KNOB_PARAMS)
     LiveNoteOn(u8, u8, u8), // note, velocity, channel
     LiveNoteOff(u8, u8),    // note, channel
+    /// Playback rate multiplier (1.0 = normal speed).
+    SetSpeed(f32),
 }
 
 #[derive(Debug)]
@@ -54,6 +56,7 @@ pub fn spawn(
     octave_offset: i8,
     waveforms: Vec<crate::synth::Waveform>,
     shared_synth: Option<Arc<Mutex<SoftSynth>>>,
+    speed: f32,
 ) -> PlaybackHandle {
     // Transport controls must never block the UI thread. Seeking can generate
     // many updates while the slider is dragged, so use an unbounded channel;
@@ -70,7 +73,7 @@ pub fn spawn(
     std::thread::spawn(move || {
         run(
             file, cmd_rx, events_out, audio_enabled, track_muted, track_channel, track_octave,
-            midi_conn, synth, keyboard_notes, octave_offset,
+            midi_conn, synth, keyboard_notes, octave_offset, speed,
         );
     });
 
@@ -146,6 +149,12 @@ fn find_cursor(events: &[crate::midi::TimedEvent], tick: u64) -> usize {
     events.partition_point(|e| e.tick < tick)
 }
 
+/// Wall-clock time elapsed since `wall_start`, scaled by the playback speed
+/// multiplier to get the corresponding amount of musical time elapsed.
+fn scaled_elapsed_us(wall_start: Instant, speed: f32) -> u64 {
+    (wall_start.elapsed().as_secs_f64() * speed as f64 * 1_000_000.0).max(0.0) as u64
+}
+
 /// The channel actually written to the wire/synth for a track's event. Notes
 /// keep whatever channel they were parsed with (drum-percussion detection and
 /// on-screen highlighting depend on that original value) — only the output
@@ -191,6 +200,7 @@ fn run(
     synth: Option<Arc<Mutex<SoftSynth>>>,
     keyboard_notes: Arc<HashSet<u8>>,
     mut octave_offset: i8,
+    mut speed: f32,
 ) {
     let mut cursor = 0usize;
     let mut playing = false;
@@ -262,6 +272,7 @@ fn run(
                 Ok(PlayCmd::LiveNoteOff(note, channel)) => {
                     live_note_off(&mut midi_conn, &synth, note, channel);
                 }
+                Ok(PlayCmd::SetSpeed(v)) => { speed = v.max(0.05); }
                 Err(_) => {
                     all_notes_off(&mut midi_conn, &synth);
                     return;
@@ -271,8 +282,8 @@ fn run(
         }
 
         // ── Playing: anchor the clock to the exact playhead tick ────────────
-        let start_us = tick_to_micros_abs(position_tick, &file.tempo_map, file.ticks_per_beat);
-        let wall_start = Instant::now();
+        let mut start_us = tick_to_micros_abs(position_tick, &file.tempo_map, file.ticks_per_beat);
+        let mut wall_start = Instant::now();
         let mut last_position_report = Instant::now();
 
         // A seek can land in the middle of a held note. Restore those notes so
@@ -302,7 +313,7 @@ fn run(
         }
 
         'playing: loop {
-            let now_us = start_us.saturating_add(wall_start.elapsed().as_micros() as u64);
+            let now_us = start_us.saturating_add(scaled_elapsed_us(wall_start, speed));
 
             // A loop range wraps the transport back to its start the instant
             // playback reaches its end, without waiting for a Done round-trip
@@ -331,17 +342,24 @@ fn run(
                     .saturating_sub(now_us)
             });
 
+            // `until_event_us`/`until_loop_us` are musical-time durations; convert
+            // to wall-clock time before sleeping so a speed multiplier stretches
+            // or compresses how long we actually wait.
+            let to_wall_us = |music_us: u64| -> u64 { (music_us as f64 / speed as f64) as u64 };
+            let event_wait_us = to_wall_us(until_event_us);
+            let loop_wait_us = until_loop_us.map(to_wall_us);
+
             // Wake at least every 20 ms to keep the playhead smooth, but wake
             // immediately for any transport command—even during a long rest—
             // and no later than the loop point so the wrap stays tight.
-            let wait_us = until_event_us
-                .min(until_loop_us.unwrap_or(u64::MAX))
+            let wait_us = event_wait_us
+                .min(loop_wait_us.unwrap_or(u64::MAX))
                 .min(20_000);
             match cmd_rx.recv_timeout(Duration::from_micros(wait_us)) {
                 Ok(PlayCmd::Pause) => {
                     position_tick = tick_at_micros(
                         &file,
-                        start_us.saturating_add(wall_start.elapsed().as_micros() as u64),
+                        start_us.saturating_add(scaled_elapsed_us(wall_start, speed)),
                     );
                     all_notes_off(&mut midi_conn, &synth);
                     publish_position(&events_out, position_tick, true);
@@ -411,16 +429,25 @@ fn run(
                     live_note_off(&mut midi_conn, &synth, note, channel);
                     continue;
                 }
+                Ok(PlayCmd::SetSpeed(v)) => {
+                    // Re-anchor the clock at the current musical position instead
+                    // of restarting the loop, so held notes keep sounding through
+                    // a speed change instead of glitching off and back on.
+                    start_us = start_us.saturating_add(scaled_elapsed_us(wall_start, speed));
+                    wall_start = Instant::now();
+                    speed = v.max(0.05);
+                    continue;
+                }
                 Ok(PlayCmd::Play) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
                     all_notes_off(&mut midi_conn, &synth);
                     return;
                 }
-                Err(RecvTimeoutError::Timeout) if until_event_us > wait_us => {
+                Err(RecvTimeoutError::Timeout) if event_wait_us > wait_us => {
                     if last_position_report.elapsed() >= Duration::from_millis(50) {
                         position_tick = tick_at_micros(
                             &file,
-                            start_us.saturating_add(wall_start.elapsed().as_micros() as u64),
+                            start_us.saturating_add(scaled_elapsed_us(wall_start, speed)),
                         );
                         publish_position(&events_out, position_tick, false);
                         last_position_report = Instant::now();
@@ -574,6 +601,7 @@ mod tests {
                 None,
                 Arc::new(HashSet::from([60])),
                 0,
+                1.0,
             );
         });
 

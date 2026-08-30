@@ -1868,6 +1868,26 @@ fn knob_readout(idx: u8, value: f32) -> Option<String> {
     })
 }
 
+/// Paints a solid rectangle with a thick, butt-capped horizontal stroke
+/// instead of `frame.fill` — see `draw_knob_pointer`'s dot-trick comment:
+/// plain fills silently fail to render anywhere in this board canvas's
+/// cache-backed pipeline (reproduced with fills of every size/color), while
+/// strokes render reliably. Loses the small corner radius a `rounded_rect`
+/// fill would have had; negligible next to actually being visible at all.
+fn fill_rect(frame: &mut Frame, rect: Rectangle, color: Color) {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+    let y = rect.y + rect.height / 2.0;
+    frame.stroke(
+        &Path::line(Point::new(rect.x, y), Point::new(rect.x + rect.width, y)),
+        canvas::Stroke::default()
+            .with_color(color)
+            .with_width(rect.height)
+            .with_line_cap(canvas::LineCap::Butt),
+    );
+}
+
 fn draw_knob_slider(frame: &mut Frame, knob_rect: Rectangle, value: f32, readout: Option<String>) {
     let (top, bottom) = knob_slider_track(knob_rect);
     let center_x = knob_rect.x + knob_rect.width / 2.0;
@@ -1880,23 +1900,15 @@ fn draw_knob_slider(frame: &mut Frame, knob_rect: Rectangle, value: f32, readout
         .map(|text| (text.len() as f32 * 7.2 + 28.0).max(100.0))
         .unwrap_or(100.0);
 
-    let panel = rounded_rect(
-        Rectangle {
-            x: center_x - panel_width / 2.0,
-            y: top - 30.0,
-            width: panel_width,
-            height: (bottom - top) + 40.0,
-        },
-        8.0,
-    );
-    // Very dark, low-RGB fill colors (roughly below 0x20 per channel) render
-    // as invisible or badly washed out in this app's canvas pipeline even at
-    // full alpha, while otherwise-identical strokes render correctly — this
-    // panel used to be near-black (0x11,0x13,0x0F) and never appeared at
-    // all. Kept dark but nudged into a range that actually paints.
-    frame.fill(&panel, Color::from_rgba8(0x20, 0x1E, 0x2A, 0.97));
+    let panel_rect = Rectangle {
+        x: center_x - panel_width / 2.0,
+        y: top - 30.0,
+        width: panel_width,
+        height: (bottom - top) + 40.0,
+    };
+    fill_rect(frame, panel_rect, Color::from_rgba8(0x20, 0x1E, 0x2A, 0.97));
     frame.stroke(
-        &panel,
+        &rounded_rect(panel_rect, 8.0),
         canvas::Stroke::default()
             .with_color(rgb(0x75, 0x6B, 0x4E))
             .with_width(1.0),
@@ -1915,33 +1927,34 @@ fn draw_knob_slider(frame: &mut Frame, knob_rect: Rectangle, value: f32, readout
         });
     }
 
-    let track = rounded_rect(
-        Rectangle {
-            x: center_x - 3.0,
-            y: top,
-            width: 6.0,
-            height: bottom - top,
-        },
-        3.0,
+    fill_rect(
+        frame,
+        Rectangle { x: center_x - 3.0, y: top, width: 6.0, height: bottom - top },
+        rgb(0x25, 0x27, 0x1D),
     );
-    frame.fill(&track, rgb(0x25, 0x27, 0x1D));
 
     let handle_y = top + (1.0 - value) * (bottom - top);
-    let filled = rounded_rect(
-        Rectangle {
-            x: center_x - 3.0,
-            y: handle_y,
-            width: 6.0,
-            height: bottom - handle_y,
-        },
-        3.0,
+    fill_rect(
+        frame,
+        Rectangle { x: center_x - 3.0, y: handle_y, width: 6.0, height: bottom - handle_y },
+        rgb(0xFF, 0x76, 0x7B),
     );
-    frame.fill(&filled, rgb(0xFF, 0x76, 0x7B));
 
-    let handle = Path::circle(Point::new(center_x, handle_y), 8.0);
-    frame.fill(&handle, rgb(0xFF, 0x76, 0x7B));
+    // Handle dot: same zero-length round-capped-stroke trick as
+    // `draw_knob_pointer`'s tip/center dots, since `frame.fill` on the
+    // circle path itself wouldn't render.
     frame.stroke(
-        &handle,
+        &Path::line(
+            Point::new(center_x, handle_y),
+            Point::new(center_x, handle_y),
+        ),
+        canvas::Stroke::default()
+            .with_color(rgb(0xFF, 0x76, 0x7B))
+            .with_width(16.0)
+            .with_line_cap(canvas::LineCap::Round),
+    );
+    frame.stroke(
+        &Path::circle(Point::new(center_x, handle_y), 8.0),
         canvas::Stroke::default()
             .with_color(Color::WHITE)
             .with_width(1.5),

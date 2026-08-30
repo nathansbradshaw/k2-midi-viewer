@@ -32,6 +32,8 @@ pub enum PlayCmd {
     LiveNoteOn(u8, u8, u8),
     LiveNoteOff(u8, u8),
     SetMidiOutput(Option<MidiOutputConnection>),
+    /// Playback rate multiplier (1.0 = normal speed).
+    SetSpeed(f32),
 }
 
 #[derive(Debug)]
@@ -266,6 +268,7 @@ pub fn spawn(
     octave_offset: i8,
     waveforms: Vec<crate::synth::Waveform>,
     shared_synth: Option<Arc<Mutex<SoftSynth>>>,
+    speed: f32,
 ) -> PlaybackHandle {
     if let Some(ref synth) = shared_synth {
         if let Ok(mut synth) = synth.lock() {
@@ -292,6 +295,7 @@ pub fn spawn(
         playing: false,
         wall_start: Instant::now(),
         start_micros: 0,
+        speed,
     }));
 
     PlaybackHandle {
@@ -319,6 +323,7 @@ struct WebPlayback {
     playing: bool,
     wall_start: Instant,
     start_micros: u64,
+    speed: f32,
 }
 
 impl WebPlayback {
@@ -329,7 +334,9 @@ impl WebPlayback {
         }
 
         let elapsed = Instant::now().duration_since(self.wall_start);
-        let raw_target_micros = self.start_micros.saturating_add(duration_micros(elapsed));
+        let raw_target_micros = self
+            .start_micros
+            .saturating_add(scaled_duration_micros(elapsed, self.speed));
         let total_micros = tick_to_micros_abs(
             self.file.total_ticks,
             &self.file.tempo_map,
@@ -465,6 +472,21 @@ impl WebPlayback {
                     self.all_notes_off();
                     self.midi_conn = output;
                 }
+                PlayCmd::SetSpeed(speed) => {
+                    // Re-anchor the clock at the current musical position
+                    // instead of touching the cursor/notes, so held notes
+                    // keep sounding through a speed change instead of
+                    // glitching off and back on.
+                    if self.playing {
+                        let elapsed = scaled_duration_micros(
+                            Instant::now().duration_since(self.wall_start),
+                            self.speed,
+                        );
+                        self.start_micros = self.start_micros.saturating_add(elapsed);
+                        self.wall_start = Instant::now();
+                    }
+                    self.speed = speed.max(0.05);
+                }
             }
         }
     }
@@ -494,7 +516,10 @@ impl WebPlayback {
         if !self.playing {
             return;
         }
-        let elapsed = duration_micros(Instant::now().duration_since(self.wall_start));
+        let elapsed = scaled_duration_micros(
+            Instant::now().duration_since(self.wall_start),
+            self.speed,
+        );
         self.position_tick = tick_at_micros(&self.file, self.start_micros.saturating_add(elapsed));
         self.publish(PlayEvent::Position(self.position_tick));
     }
@@ -606,8 +631,10 @@ impl WebPlayback {
     }
 }
 
-fn duration_micros(duration: Duration) -> u64 {
-    duration.as_micros().min(u64::MAX as u128) as u64
+/// Wall-clock duration scaled by the playback speed multiplier, to get the
+/// corresponding amount of musical time elapsed.
+fn scaled_duration_micros(duration: Duration, speed: f32) -> u64 {
+    (duration.as_secs_f64() * speed as f64 * 1_000_000.0).max(0.0) as u64
 }
 
 fn tick_at_micros(file: &MidiFile, micros: u64) -> u64 {

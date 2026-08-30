@@ -38,6 +38,9 @@ use staff::StaffCanvas;
 
 const SEEK_STEP: f32 = 0.0001;
 
+const SPEED_MIN: f32 = 0.25;
+const SPEED_MAX: f32 = 2.0;
+
 /// Signals the HTML loading screen (see `index.html`) to hide once the app
 /// has actually rendered its first frame. Wasm instantiation finishing is
 /// not enough of a signal on its own: the wgpu/WebGL adapter and device are
@@ -1092,6 +1095,147 @@ fn static_rotary_knob(
     .into()
 }
 
+/// Drag state for [`drag_knob`]: whether a drag is active, and the (cursor Y,
+/// knob value) captured on mouse-down — mirrors `BoardCanvas`'s `dragging_knob`
+/// / `drag_start` fields (see `render.rs`), just scoped to a single knob
+/// instead of the whole board's 13 encoder knobs.
+#[derive(Default)]
+struct DragKnobState {
+    dragging: bool,
+    drag_start: Option<(f32, f32)>,
+}
+
+/// Vertical drag distance, in pixels, mapped onto the knob's full 0.0..=1.0
+/// travel — matches `render::knob_slider_track`'s feel: a much longer throw
+/// than the knob's own on-screen size, so a precise setting is easy to land.
+const DRAG_KNOB_TRACK_PX: f32 = 120.0;
+
+/// A rotary knob driven by vertical mouse drag (or scroll-wheel nudge), the
+/// same interaction as the board's own synth-parameter knobs (see
+/// `render::BoardCanvas`'s knob handling) — unlike [`rotary_knob`], which is
+/// a dial paired with a `pick_list` for a small set of discrete options, this
+/// is for a continuous range.
+struct DragKnob<F: Fn(f32) -> Message> {
+    face: image::Handle,
+    /// Current position, 0.0..=1.0.
+    value: f32,
+    on_change: F,
+}
+
+impl<F: Fn(f32) -> Message> canvas::Program<Message> for DragKnob<F> {
+    type State = DragKnobState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &canvas::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        match event {
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                if let Some(pos) = cursor.position_in(bounds) {
+                    let start_y = cursor.position().map(|p| p.y).unwrap_or(pos.y);
+                    state.dragging = true;
+                    state.drag_start = Some((start_y, self.value));
+                    return Some(canvas::Action::capture());
+                }
+            }
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if state.dragging {
+                    if let (Some(pos), Some((start_y, start_value))) =
+                        (cursor.position(), state.drag_start)
+                    {
+                        let delta = (pos.y - start_y) / DRAG_KNOB_TRACK_PX;
+                        let value = (start_value - delta).clamp(0.0, 1.0);
+                        return Some(
+                            canvas::Action::publish((self.on_change)(value)).and_capture(),
+                        );
+                    }
+                }
+            }
+            canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if state.dragging {
+                    state.dragging = false;
+                    state.drag_start = None;
+                    return Some(canvas::Action::capture());
+                }
+            }
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                if cursor.position_in(bounds).is_some() {
+                    let amount = match *delta {
+                        mouse::ScrollDelta::Lines { y, .. } => y * 0.05,
+                        mouse::ScrollDelta::Pixels { y, .. } => y / 200.0,
+                    };
+                    let value = (self.value + amount).clamp(0.0, 1.0);
+                    return Some(
+                        canvas::Action::publish((self.on_change)(value)).and_capture(),
+                    );
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        KnobDial {
+            face: self.face.clone(),
+            angle: Radians((-135.0 + self.value.clamp(0.0, 1.0) * 270.0).to_radians()),
+        }
+        .draw(&(), renderer, theme, bounds, cursor)
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        if state.dragging || cursor.is_over(bounds) {
+            mouse::Interaction::Grab
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+}
+
+/// A knob for a continuous range, dragged vertically like the board's own
+/// synth-parameter knobs (see [`DragKnob`]) rather than picked from a fixed
+/// list like [`rotary_knob`].
+fn drag_knob<'a>(
+    assets: &ControlAssets,
+    caption: &'static str,
+    value_label: String,
+    value: f32,
+    on_change: impl Fn(f32) -> Message + 'a,
+) -> Element<'a, Message> {
+    const SIZE: f32 = 30.0;
+    let dial = Canvas::new(DragKnob {
+        face: assets.rotary_knob_face.clone(),
+        value,
+        on_change,
+    })
+    .width(Length::Fixed(SIZE))
+    .height(Length::Fixed(SIZE));
+
+    column![
+        text(caption).size(8).color(TEXT_MUTED),
+        dial,
+        text(value_label).size(9).color(TEXT_MAIN),
+    ]
+    .spacing(0)
+    .align_x(Alignment::Center)
+    .into()
+}
+
 /// A tiny mounted indicator lamp: the shared neutral lens/bezel asset with
 /// the track color composited as the lamp's own light source underneath it
 /// — glowing only when lit — so it reads as physical hardware rather than a
@@ -1720,6 +1864,8 @@ struct App {
     play_state: PlayState,
     looper_enabled: bool,
     position_tick: u64,
+    /// Playback rate multiplier applied to file playback (1.0 = normal speed).
+    playback_speed: f32,
     audio_enabled: Arc<AtomicBool>,
     playback_events: Arc<Mutex<VecDeque<PlayEvent>>>,
     soft_synth: Option<Arc<Mutex<synth::SoftSynth>>>,
@@ -1847,6 +1993,7 @@ impl Default for App {
             play_state: PlayState::Stopped,
             looper_enabled: false,
             position_tick: 0,
+            playback_speed: 1.0,
             audio_enabled: Arc::new(AtomicBool::new(true)),
             playback_events: Arc::new(Mutex::new(VecDeque::new())),
             soft_synth,
@@ -1940,6 +2087,7 @@ pub enum Message {
     ToggleLooper,
     SeekTo(f32), // 0.0..=1.0 progress
     PollPlayback,
+    SpeedChanged(f32),
     // audio
     ToggleAudio,
     // port
@@ -2877,6 +3025,13 @@ impl App {
         }
     }
 
+    /// Tells the playback thread about a new playback speed multiplier.
+    fn sync_playback_speed(&self) {
+        if let Some(ref h) = self.playback_handle {
+            h.cmd_tx.send(PlayCmd::SetSpeed(self.playback_speed)).ok();
+        }
+    }
+
     /// The waveforms currently layered together, derived from whichever
     /// Nav waveform-select keys are toggled on.
     fn active_waveforms(&self) -> Vec<synth::Waveform> {
@@ -3219,6 +3374,7 @@ impl App {
                     self.octave_offset,
                     self.active_waveforms(),
                     self.soft_synth.as_ref().map(Arc::clone),
+                    self.playback_speed,
                 );
                 self.playback_handle = Some(handle);
                 self.midi_file = Some(file);
@@ -3391,6 +3547,11 @@ impl App {
                     }
                     self.position_tick = tick;
                 }
+                Task::none()
+            }
+            Message::SpeedChanged(value) => {
+                self.playback_speed = value.clamp(SPEED_MIN, SPEED_MAX);
+                self.sync_playback_speed();
                 Task::none()
             }
 
@@ -3898,6 +4059,21 @@ impl App {
         .spacing(5)
         .align_y(Alignment::Center);
 
+        let speed_percent = (self.playback_speed * 100.0).round().clamp(0.0, u16::MAX as f32) as u16;
+        let speed_fraction = (self.playback_speed - SPEED_MIN) / (SPEED_MAX - SPEED_MIN);
+        let speed_controls = row![
+            text("SPEED").size(10).color(TEXT_MUTED),
+            drag_knob(
+                &self.control_assets,
+                "RATE",
+                format!("{speed_percent}%"),
+                speed_fraction,
+                |frac: f32| Message::SpeedChanged(SPEED_MIN + frac * (SPEED_MAX - SPEED_MIN)),
+            ),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+
         let all_notes_label = if self.show_all_notes {
             "All notes: on"
         } else {
@@ -4157,9 +4333,11 @@ impl App {
 
         // Secondary strip: pitch mapping and view toggles, muted styling so
         // they read as auxiliary controls under the main header row.
-        // Three logical clusters — pitch mapping, view toggles, board mode —
-        // each its own recessed chip, instead of one continuous toolbar row.
+        // Four logical clusters — pitch mapping, playback speed, view
+        // toggles, board mode — each its own recessed chip, instead of one
+        // continuous toolbar row.
         let pitch_cluster = control_cluster(pitch_controls, dense_desktop);
+        let speed_cluster = control_cluster(speed_controls, dense_desktop);
         let view_cluster = control_cluster(
             row![all_notes_btn, keyboard_hits_btn, drum_symbols_btn]
                 .spacing(5)
@@ -4169,12 +4347,14 @@ impl App {
         let board_cluster = control_cluster(compact_keyboard_btn, dense_desktop);
 
         let header_secondary: Element<Message> = if self.window_size.width < 720.0 {
-            column![pitch_cluster, view_cluster, board_cluster]
+            column![pitch_cluster, speed_cluster, view_cluster, board_cluster]
                 .spacing(row_gap)
                 .into()
         } else if self.window_size.width < 1180.0 {
             column![
-                pitch_cluster,
+                row![pitch_cluster, speed_cluster]
+                    .spacing(row_gap)
+                    .align_y(Alignment::Center),
                 row![view_cluster, board_cluster]
                     .spacing(row_gap)
                     .align_y(Alignment::Center),
@@ -4182,7 +4362,7 @@ impl App {
             .spacing(row_gap)
             .into()
         } else {
-            row![pitch_cluster, view_cluster, board_cluster]
+            row![pitch_cluster, speed_cluster, view_cluster, board_cluster]
                 .spacing(row_gap * 1.5)
                 .align_y(Alignment::Center)
                 .into()
@@ -4819,15 +4999,15 @@ impl App {
         };
 
         let centered_shell: Element<Message> = container(shell)
+            .width(Length::Fill)
             .max_width(1600.0 + rail_width * 2.0)
-            .center_x(Length::Fill)
             .height(Length::Fill)
             .into();
 
         // The page itself stays neutral and texture-free. Grain belongs to the
         // equipment panels above, while walnut is limited to the two side rails.
         container(centered_shell)
-            .width(Length::Fill)
+            .center_x(Length::Fill)
             .height(Length::Fill)
             .style(|_| container::Style {
                 background: Some(Background::Color(APP_BG)),
