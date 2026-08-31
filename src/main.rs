@@ -2045,6 +2045,32 @@ fn keyboard_focus_shortcut_event(
     }
 }
 
+/// Native windows can safely switch to borderless fullscreen. On the web,
+/// changing winit's window mode recreates the WebGL surface and leaves
+/// already-uploaded photographic textures blank on return. The web app owns
+/// the full browser viewport, so the focus render path is used on its own.
+fn keyboard_focus_window_task(
+    window: iced::window::Id,
+    enabled: bool,
+) -> Task<Message> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        iced::window::set_mode(
+            window,
+            if enabled {
+                iced::window::Mode::Fullscreen
+            } else {
+                iced::window::Mode::Windowed
+            },
+        )
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (window, enabled);
+        Task::none()
+    }
+}
+
 /// How to pick a key when a note repeats across this keyboard's overlapping
 /// rows. LeftRight/UpDown are fixed, predictable preferences (always the
 /// last/first occurrence). Closest instead solves for the key assignment
@@ -3609,20 +3635,13 @@ impl App {
             Message::ToggleKeyboardFocus(window) => {
                 let enabled = !self.keyboard_focus_mode;
                 self.set_keyboard_focus_mode(enabled);
-                iced::window::set_mode(
-                    window,
-                    if enabled {
-                        iced::window::Mode::Fullscreen
-                    } else {
-                        iced::window::Mode::Windowed
-                    },
-                )
+                keyboard_focus_window_task(window, enabled)
             }
 
             Message::ExitKeyboardFocus(window) => {
                 if self.keyboard_focus_mode {
                     self.set_keyboard_focus_mode(false);
-                    iced::window::set_mode(window, iced::window::Mode::Windowed)
+                    keyboard_focus_window_task(window, false)
                 } else {
                     Task::none()
                 }
@@ -4290,9 +4309,6 @@ impl App {
 
     fn view(&self) -> Element<'_, Message> {
         boot::notify_first_frame();
-        if self.keyboard_focus_mode {
-            return self.keyboard_focus_view();
-        }
         let has_file = self.midi_file.is_some();
         let dense_desktop = self.window_size.width >= 1180.0;
         let (outer_pad, section_gap, panel_v, panel_h, row_gap, track_gap) =
@@ -5421,9 +5437,11 @@ impl App {
             .height(Length::Fill)
             .into();
 
-        // The page itself stays neutral and texture-free. Grain belongs to the
-        // equipment panels above, while walnut is limited to the two side rails.
-        container(centered_shell)
+        // Keep the standard console mounted beneath focus mode. Besides
+        // preserving control state, this keeps Iced's uploaded photographic
+        // textures alive across the toggle; remounting a large image tree can
+        // otherwise return blank on some WebGL renderers.
+        let normal_view: Element<Message> = container(centered_shell)
             .center_x(Length::Fill)
             .height(Length::Fill)
             .style(|_| container::Style {
@@ -5431,7 +5449,26 @@ impl App {
                 text_color: Some(TEXT_MAIN),
                 ..Default::default()
             })
-            .into()
+            .into();
+        // Keep the overlay in the tree too. At 0×0 it is inert, while a
+        // stable two-child stack prevents the WebGL image widget state from
+        // being reconciled against a completely different subtree on toggle.
+        let focus_overlay = container(self.keyboard_focus_view())
+            .width(if self.keyboard_focus_mode {
+                Length::Fill
+            } else {
+                Length::Fixed(0.0)
+            })
+            .height(if self.keyboard_focus_mode {
+                Length::Fill
+            } else {
+                Length::Fixed(0.0)
+            });
+        let view = Stack::new().push(normal_view).push(focus_overlay);
+
+        // The page itself stays neutral and texture-free. Grain belongs to the
+        // equipment panels above, while walnut is limited to the two side rails.
+        view.into()
     }
 }
 
