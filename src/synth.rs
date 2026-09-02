@@ -21,13 +21,20 @@ pub enum Waveform {
 }
 
 impl Waveform {
+    /// Generate one oscillator sample from a normalized 0.0..1.0 phase.
+    ///
+    /// Triangle, Square, Saw, and Sine intentionally match the oscillator in
+    /// `synth-phone-e-v2-rust`'s `synthphone-e-vocal-dsp` dependency. Keeping
+    /// the formulas here (rather than taking the embedded dependency) lets the
+    /// desktop/web synth retain its additional waveforms and avoids pulling a
+    /// `no_std` DSP stack into the viewer.
     fn sample(self, phase: f32) -> f32 {
         match self {
             Waveform::Organ => {
                 let a = phase * TAU;
                 a.sin() + 0.35 * (2.0 * a).sin() + 0.12 * (3.0 * a).sin()
             }
-            Waveform::Triangle => 1.0 - 4.0 * (phase - 0.5).abs(),
+            Waveform::Triangle => 4.0 * (phase - 0.5).abs() - 1.0,
             Waveform::Square => if phase < 0.5 { 1.0 } else { -1.0 },
             Waveform::Saw => 2.0 * phase - 1.0,
             Waveform::Sine => (phase * TAU).sin(),
@@ -41,16 +48,45 @@ impl Waveform {
             }
         }
     }
+
+    /// Match the firmware's perceived-level compensation for its shared
+    /// oscillator modes. Triangle and sine contain less harmonic energy than
+    /// square and saw at the same peak amplitude, so the hardware boosts them
+    /// before its final limiter.
+    fn synth_phone_gain(self) -> f32 {
+        match self {
+            Waveform::Triangle => 1.2,
+            Waveform::Sine => 1.4,
+            _ => 1.0,
+        }
+    }
 }
 
-const MAX_VOICES:      usize = 16;
+// The embedded SynthPhone voice manager is eight-voice polyphonic. Matching
+// that limit and its square-root mix normalization keeps chord levels and voice
+// stealing behavior comparable between the hardware and viewer.
+const MAX_VOICES:      usize = 8;
 const MAX_DRUM_VOICES: usize = 12;
-const ATTACK_S:   f32 = 0.005; // 5 ms
-const DECAY_S:    f32 = 0.30;
-const SUSTAIN:    f32 = 0.55;
-const RELEASE_S:  f32 = 0.25;
-const VOICE_GAIN: f32 = 0.22; // per-voice scale; keeps mix below 0 dBFS
+// The firmware oscillator starts and stops immediately. Tiny attack/release
+// ramps retain that direct response while preventing desktop audio clicks; the
+// controls can still be moved away from these neutral defaults.
+const ATTACK_S:   f32 = 0.001;
+const DECAY_S:    f32 = 0.01;
+const SUSTAIN:    f32 = 1.0;
+const RELEASE_S:  f32 = 0.01;
+const VOICE_GAIN: f32 = 0.10; // matches the firmware's final MIDI mix scale
 const DRUM_GAIN:  f32 = 0.6;  // drum engine output is already near full-scale
+const INV_SQRT_VOICE_COUNT: [f32; MAX_VOICES + 1] = [
+    0.0,
+    1.0,
+    0.707_106_77,
+    0.577_350_26,
+    0.5,
+    0.447_213_6,
+    0.408_248_3,
+    0.377_964_47,
+    0.353_553_38,
+];
 
 /// One of the 12 front-panel encoder knobs. `min`/`max` describe the real
 /// engine unit each knob controls (seconds, Hz, cents, ...); the knob itself
@@ -70,7 +106,7 @@ pub const KNOB_COUNT: usize = 13;
 /// left (`Bitcrush`).
 pub const KNOB_PARAMS: [KnobParam; KNOB_COUNT] = [
     KnobParam { label: "Volume",   min: 0.0,   max: 1.5,   default: 1.0 },
-    KnobParam { label: "Cutoff",   min: 0.05,  max: 1.0,   default: 0.30 },
+    KnobParam { label: "Cutoff",   min: 0.05,  max: 1.0,   default: 1.0 },
     KnobParam { label: "Attack",   min: 0.001, max: 1.0,   default: ATTACK_S },
     KnobParam { label: "Release",  min: 0.01,  max: 3.0,   default: RELEASE_S },
     KnobParam { label: "Decay",    min: 0.01,  max: 2.0,   default: DECAY_S },
@@ -278,7 +314,9 @@ impl SoftSynth {
         let sustain      = self.sustain;
         let attack_rate  = 1.0 / (self.attack_s * sr);
         let decay_rate   = (1.0 - sustain) / (self.decay_s * sr);
-        let release_rate = sustain / (self.release_s * sr);
+        // Release from the voice's current envelope level. Using `sustain` in
+        // this rate leaves zero-sustain voices stuck forever after NoteOff.
+        let release_rate = 1.0 / (self.release_s * sr);
         let lp_coeff     = self.cutoff;
         let active_waveforms = &self.active_waveforms;
 
@@ -290,6 +328,10 @@ impl SoftSynth {
         let vib_depth_ratio = 2f32.powf(self.vibrato_depth / 1200.0) - 1.0;
         let lfo_inc         = self.vibrato_rate / sr;
         let tremolo_depth   = self.tremolo_depth;
+        let active_voice_count = self.voices.iter()
+            .filter(|voice| voice.stage != Stage::Done)
+            .count();
+        let voice_mix_gain = INV_SQRT_VOICE_COUNT[active_voice_count];
         let (pan_l, pan_r) = if self.pan <= 0.0 {
             (1.0, 1.0 + self.pan)
         } else {
@@ -298,7 +340,7 @@ impl SoftSynth {
 
         for v in &mut self.voices {
             if v.stage == Stage::Done { continue; }
-            let gain = v.vel * VOICE_GAIN;
+            let gain = v.vel * VOICE_GAIN * voice_mix_gain;
 
             for (i, frame) in data.chunks_exact_mut(ch).enumerate() {
                 let lfo_phase = (self.lfo_phase + i as f32 * lfo_inc).fract();
@@ -312,7 +354,9 @@ impl SoftSynth {
                 let wave = if active_waveforms.is_empty() {
                     Waveform::Organ.sample(v.phase)
                 } else {
-                    active_waveforms.iter().map(|w| w.sample(v.phase)).sum::<f32>()
+                    active_waveforms.iter()
+                        .map(|w| w.sample(v.phase) * w.synth_phone_gain())
+                        .sum::<f32>()
                         / active_waveforms.len() as f32
                 };
 
@@ -442,8 +486,10 @@ mod tests {
 
     #[test]
     fn selectable_waveforms_have_the_expected_shape() {
-        close(Waveform::Triangle.sample(0.0), -1.0);
-        close(Waveform::Triangle.sample(0.5), 1.0);
+        // These assertions mirror synthphone-e-vocal-dsp's four Oscillator
+        // modes so the shared implementations cannot silently drift apart.
+        close(Waveform::Triangle.sample(0.0), 1.0);
+        close(Waveform::Triangle.sample(0.5), -1.0);
         close(Waveform::Square.sample(0.25), 1.0);
         close(Waveform::Square.sample(0.75), -1.0);
         close(Waveform::Saw.sample(0.0), -1.0);
@@ -453,6 +499,46 @@ mod tests {
         close(Waveform::Pulse.sample(0.1), 1.0);
         close(Waveform::Pulse.sample(0.5), -1.0);
         assert!(Waveform::Noise.sample(0.37).abs() <= 1.0);
+    }
+
+    #[test]
+    fn shared_waveforms_use_synth_phone_level_compensation() {
+        close(Waveform::Triangle.synth_phone_gain(), 1.2);
+        close(Waveform::Sine.synth_phone_gain(), 1.4);
+        close(Waveform::Square.synth_phone_gain(), 1.0);
+        close(Waveform::Saw.synth_phone_gain(), 1.0);
+    }
+
+    #[test]
+    fn default_tone_controls_leave_the_shared_oscillator_unfiltered_and_sustained() {
+        let synth = SoftSynth::new(48_000.0, 2);
+
+        close(synth.cutoff, 1.0);
+        close(synth.sustain, 1.0);
+        close(synth.attack_s, 0.001);
+        close(synth.release_s, 0.01);
+    }
+
+    #[test]
+    fn polyphonic_mix_uses_the_synth_phone_voice_curve() {
+        close(INV_SQRT_VOICE_COUNT[1], 1.0);
+        close(INV_SQRT_VOICE_COUNT[2], 1.0 / 2.0_f32.sqrt());
+        close(INV_SQRT_VOICE_COUNT[4], 0.5);
+        close(INV_SQRT_VOICE_COUNT[8], 1.0 / 8.0_f32.sqrt());
+    }
+
+    #[test]
+    fn zero_sustain_notes_still_finish_releasing() {
+        let mut synth = SoftSynth::new(1_000.0, 1);
+        synth.set_knob(5, 0.0);
+        synth.note_on(60, 127, 0);
+        let mut attack = vec![0.0; 4];
+        synth.render(&mut attack);
+        synth.note_off(60, 0);
+        let mut release = vec![0.0; 20];
+        synth.render(&mut release);
+
+        assert!(synth.voices.is_empty());
     }
 
     #[test]
