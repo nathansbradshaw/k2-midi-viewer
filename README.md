@@ -4,6 +4,13 @@
 
 # K2 MIDI Viewer
 
+<a href="https://0rwx.com/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NamtaoProductions/0rwx.com/main/static/AI-W-dark.png" />
+    <img src="https://raw.githubusercontent.com/NamtaoProductions/0rwx.com/main/static/AI-W-light.png" alt="AI:W — AI collaboration (0rwx)" width="80" />
+  </picture>
+</a>
+
 K2—short for “keyboard squared”—renders MIDI files across a full
 computer-keyboard layout with transport, track muting, pitch controls, staff
 notation, and a built-in soft synth.
