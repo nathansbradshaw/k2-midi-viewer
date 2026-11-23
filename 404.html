@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Virtual Keyboard Keyboard has moved</title>
+    <link rel="canonical" href="https://nathansbradshaw.github.io/virtual-keyboard-keyboard/" />
+    <noscript><meta http-equiv="refresh" content="0; url=https://nathansbradshaw.github.io/virtual-keyboard-keyboard/" /></noscript>
+    <style>
+      :root { color-scheme: dark; font: 18px/1.5 system-ui, sans-serif; background: #090a08; color: #f0e8d8; }
+      body { max-width: 40rem; margin: 15vh auto; padding: 1.5rem; }
+      a { color: #d98e4c; }
+    </style>
+  </head>
+  <body>
+    <h1>Virtual Keyboard Keyboard</h1>
+    <p>K2 MIDI Viewer has a new name and address.</p>
+    <p><a id="destination" href="https://nathansbradshaw.github.io/virtual-keyboard-keyboard/">Open Virtual Keyboard Keyboard</a></p>
+    <script>
+      // Browser navigation preserves shared setups, including the paired view.
+      const destination = new URL(document.getElementById("destination").href);
+      destination.search = window.location.search;
+      destination.hash = window.location.hash;
+      document.getElementById("destination").href = destination.href;
+      window.location.replace(destination.href);
+    </script>
+  </body>
+</html>
